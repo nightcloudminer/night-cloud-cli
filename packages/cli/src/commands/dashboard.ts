@@ -420,6 +420,7 @@ interface RegionData {
 
 interface MultiRegionData {
   regions: RegionData[];
+  totalRegionsMonitored: number; // Total number of regions checked
   challenges: {
     current: string | null;
     difficulty: string | null;
@@ -455,28 +456,59 @@ interface MultiRegionData {
   }>;
 }
 
-// List of all supported regions
-const ALL_REGIONS = [
-  "ap-south-1",
-  "us-east-1",
-  "us-east-2",
-  "us-west-1",
-  "us-west-2",
-  "eu-west-1",
-  "eu-west-2",
-  "eu-central-1",
-  "ap-southeast-1",
-  "ap-southeast-2",
-  "ap-northeast-1",
-  "ap-northeast-2",
-];
+/**
+ * Dynamically discover all enabled AWS regions
+ * This ensures we check all available regions instead of hardcoding
+ */
+async function discoverEnabledRegions(): Promise<string[]> {
+  try {
+    const { EC2Client, DescribeRegionsCommand } = await import("@aws-sdk/client-ec2");
+    // Use a default region to query for all regions
+    const ec2Client = new EC2Client({ region: "us-east-1" });
+
+    const command = new DescribeRegionsCommand({
+      AllRegions: false, // Only return enabled regions
+      Filters: [
+        {
+          Name: "opt-in-status",
+          Values: ["opt-in-not-required", "opted-in"],
+        },
+      ],
+    });
+
+    const response = await ec2Client.send(command);
+    const regions = response.Regions?.map((r) => r.RegionName!).filter(Boolean) || [];
+
+    return regions.sort(); // Sort alphabetically for consistency
+  } catch (error) {
+    console.error(chalk.yellow("⚠️  Failed to discover regions, using fallback list"));
+    // Fallback to a reasonable default list if discovery fails
+    return [
+      "ap-northeast-1",
+      "ap-northeast-2",
+      "ap-south-1",
+      "ap-southeast-1",
+      "ap-southeast-2",
+      "eu-central-1",
+      "eu-west-1",
+      "eu-west-2",
+      "us-east-1",
+      "us-east-2",
+      "us-west-1",
+      "us-west-2",
+    ];
+  }
+}
 
 async function fetchMultiRegionData(apiUrl: string): Promise<MultiRegionData> {
   // Fetch challenge data once (same for all regions)
   const challengeData = await fetchChallengeData(apiUrl);
 
+  // Discover all enabled regions dynamically
+  const allRegions = await discoverEnabledRegions();
+
   // Fetch data from all regions in parallel
-  const regionDataPromises = ALL_REGIONS.map(async (region): Promise<RegionData> => {
+  const regionDataPromises = allRegions.map(async (region): Promise<RegionData> => {
     try {
       const s3Registry = new S3RegistryManager(region);
       const ec2Manager = new EC2Manager(region);
@@ -599,6 +631,7 @@ async function fetchMultiRegionData(apiUrl: string): Promise<MultiRegionData> {
 
   return {
     regions: regions.filter((r) => r.instances.total > 0 || r.wallets.total > 0), // Only show regions with activity
+    totalRegionsMonitored: allRegions.length, // Total regions checked
     challenges: challengeData,
     totals,
     rewards: rewardsData,
@@ -781,5 +814,5 @@ function renderMultiRegionDashboard(
   // Footer
   console.log(chalk.gray("─".repeat(60)));
   console.log(chalk.gray(`Last updated: ${new Date().toLocaleTimeString()}`));
-  console.log(chalk.gray(`Monitoring ${ALL_REGIONS.length} regions`));
+  console.log(chalk.gray(`Monitoring ${data.totalRegionsMonitored} regions`));
 }
