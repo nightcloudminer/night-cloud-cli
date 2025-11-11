@@ -6,6 +6,7 @@
  */
 
 import { S3Client, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
+import { STSClient, GetCallerIdentityCommand } from "@aws-sdk/client-sts";
 
 export interface SolutionRecord {
   challengeId: string;
@@ -42,15 +43,33 @@ export interface SolutionStats {
 
 export class SolutionTracker {
   private s3Client: S3Client;
+  private stsClient: STSClient;
   private bucketName: string;
+  private region: string;
   private solutionsPrefix: string = "solutions/";
   private statsKey: string = "solutions-stats.json";
   private solutionCache: Map<string, Set<string>> = new Map(); // address -> Set of challengeIds
   private cacheLoaded: boolean = false;
 
   constructor(region: string) {
+    this.region = region;
+    this.bucketName = ""; // Will be set after getting account ID
     this.s3Client = new S3Client({ region });
-    this.bucketName = `night-cloud-miner-registry-${region}`;
+    this.stsClient = new STSClient({ region });
+  }
+
+  private async initializeBucketName(): Promise<void> {
+    if (this.bucketName) {
+      return; // Already initialized
+    }
+
+    try {
+      const identity = await this.stsClient.send(new GetCallerIdentityCommand({}));
+      const accountId = identity.Account;
+      this.bucketName = `night-cloud-miner-${accountId}-${this.region}`;
+    } catch (error) {
+      throw new Error(`Failed to get AWS account ID: ${error}`);
+    }
   }
 
   /**
@@ -64,6 +83,8 @@ export class SolutionTracker {
    * Preload all solutions from S3 into cache
    */
   async preloadSolutions(addresses: string[]): Promise<void> {
+    await this.initializeBucketName();
+
     console.log(`📥 Preloading solutions for ${addresses.length} addresses...`);
     this.solutionCache.clear();
 
@@ -116,7 +137,15 @@ export class SolutionTracker {
    * Record a submitted solution
    * No race conditions since each address has its own file!
    */
-  async recordSolution(address: string, challengeId: string, nonce: string, instanceId?: string, isDonation: boolean = false): Promise<boolean> {
+  async recordSolution(
+    address: string,
+    challengeId: string,
+    nonce: string,
+    instanceId?: string,
+    isDonation: boolean = false,
+  ): Promise<boolean> {
+    await this.initializeBucketName();
+
     try {
       // For donation addresses, only update stats - don't create individual address files
       if (isDonation) {
@@ -204,6 +233,8 @@ export class SolutionTracker {
     error: string,
     isDonation: boolean = false,
   ): Promise<boolean> {
+    await this.initializeBucketName();
+
     try {
       // Update global stats file with error
       await this.updateStatsWithError(address, challengeId, error, isDonation);
@@ -431,7 +462,7 @@ export class SolutionTracker {
       if (!body) {
         return this.createEmptyStats();
       }
-      
+
       const stats = JSON.parse(body);
       // Migrate legacy stats that don't have donationSolutions field
       if (stats.donationSolutions === null || stats.donationSolutions === undefined) {

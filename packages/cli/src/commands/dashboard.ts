@@ -44,24 +44,17 @@ function resetSession(totalSolutions: number): void {
 // Read version from package.json
 function getVersion(): string {
   try {
-    // Try multiple possible locations for package.json
-    const possiblePaths = [
-      path.join(__dirname, "../../package.json"), // From dist/commands/
-      path.join(__dirname, "../../../package.json"), // One more level up
-      path.join(process.cwd(), "package.json"), // Current working directory
-    ];
-
-    for (const pkgPath of possiblePaths) {
-      if (fs.existsSync(pkgPath)) {
-        const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
-        if (pkg.version) {
-          return pkg.version;
-        }
+    // From dist/commands/ to package.json at root of cli package
+    const pkgPath = path.join(__dirname, "../../package.json");
+    if (fs.existsSync(pkgPath)) {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+      if (pkg.version) {
+        return pkg.version;
       }
     }
-    return "unknown";
+    return "0.4.0";
   } catch {
-    return "unknown";
+    return "0.4.0";
   }
 }
 
@@ -217,7 +210,7 @@ async function fetchSolutionsData(region: string, s3Registry: S3RegistryManager)
   try {
     const { S3Client, GetObjectCommand } = await import("@aws-sdk/client-s3");
     const s3Client = new S3Client({ region });
-    const bucketName = `night-cloud-miner-registry-${region}`;
+    const bucketName = await s3Registry.getBucketName();
 
     // Read the stats file - single API call, super fast!
     const response = await s3Client.send(
@@ -298,12 +291,12 @@ async function fetchSolutionsData(region: string, s3Registry: S3RegistryManager)
   }
 }
 
-async function fetchWalletsData(region: string) {
+async function fetchWalletsData(region: string, s3Registry: S3RegistryManager) {
   try {
     // Read registry from S3 (contains both addresses and assignments)
     const { S3Client, GetObjectCommand } = await import("@aws-sdk/client-s3");
     const s3Client = new S3Client({ region });
-    const bucketName = `night-cloud-miner-registry-${region}`;
+    const bucketName = await s3Registry.getBucketName();
 
     const response = await s3Client.send(
       new GetObjectCommand({
@@ -485,7 +478,7 @@ async function fetchMultiRegionData(apiUrl: string): Promise<MultiRegionData> {
       const [instancesData, solutionsData, walletsData] = await Promise.all([
         fetchInstancesData(region, ec2Manager, asgManager),
         fetchSolutionsData(region, s3Registry),
-        fetchWalletsData(region),
+        fetchWalletsData(region, s3Registry),
       ]);
 
       return {

@@ -1,5 +1,6 @@
 import { Challenge } from "./shared";
 import { S3Client, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
+import { STSClient, GetCallerIdentityCommand } from "@aws-sdk/client-sts";
 
 export interface QueuedChallenge {
   challengeId: string;
@@ -20,19 +21,37 @@ export class ChallengeQueueManager {
   private challenges: QueuedChallenge[] = [];
   private maxChallenges: number = 24;
   private s3Client: S3Client;
+  private stsClient: STSClient;
   private bucketName: string;
   private region: string;
 
   constructor(region: string) {
     this.region = region;
-    this.bucketName = `night-cloud-miner-registry-${region}`;
+    this.bucketName = ""; // Will be set after getting account ID
     this.s3Client = new S3Client({ region });
+    this.stsClient = new STSClient({ region });
+  }
+
+  private async initializeBucketName(): Promise<void> {
+    if (this.bucketName) {
+      return; // Already initialized
+    }
+
+    try {
+      const identity = await this.stsClient.send(new GetCallerIdentityCommand({}));
+      const accountId = identity.Account;
+      this.bucketName = `night-cloud-miner-${accountId}-${this.region}`;
+    } catch (error) {
+      throw new Error(`Failed to get AWS account ID: ${error}`);
+    }
   }
 
   /**
    * Initialize the queue by loading from S3, or fallback to API
    */
   async initialize(): Promise<void> {
+    await this.initializeBucketName();
+
     try {
       // Try to load from S3 first
       const response = await this.s3Client.send(

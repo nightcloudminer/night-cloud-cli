@@ -3,6 +3,8 @@
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
 import chalk from "chalk";
+import { readFileSync } from "fs";
+import { join } from "path";
 import { initCommand } from "./commands/init";
 import { deployCommand } from "./commands/deploy";
 import { regionCommand } from "./commands/region";
@@ -15,10 +17,14 @@ import { mineCommand } from "./commands/mine";
 import { dashboardCommand } from "./commands/dashboard";
 import { killCommand } from "./commands/kill";
 
+// Read version from package.json
+const packageJson = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8"));
+const version = packageJson.version;
+
 yargs(hideBin(process.argv))
   .scriptName("night-cloud")
   .usage("☁️⛏️  Night Cloud Miner - One-click AWS mining infrastructure")
-  .version("0.1.0")
+  .version(version)
   .alias("v", "version")
   .alias("h", "help")
   .demandCommand(1, "You need to specify a command")
