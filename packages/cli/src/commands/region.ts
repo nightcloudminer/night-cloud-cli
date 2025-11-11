@@ -24,7 +24,7 @@ export const regionCommand = {
     await deployCommand({
       region,
       instances: options.instances,
-      minersPerInstance: config.minersPerInstance,
+      addressesPerInstance: config.addressesPerInstance,
     });
   },
 

@@ -201,7 +201,7 @@ Configuration is stored in `.night-config.json` in your working directory.
 During initialization, you'll be prompted for:
 - AWS region
 - Spot instance max price
-- Miners per instance
+- Addresses per instance
 - **Keys directory** - where to store wallet keys (default: `./keys`)
 
 ## Cost Estimation

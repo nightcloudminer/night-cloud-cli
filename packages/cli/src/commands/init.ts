@@ -58,8 +58,8 @@ export async function initCommand(): Promise<void> {
     },
     {
       type: "number",
-      name: "minersPerInstance",
-      message: "Miners per instance:",
+      name: "addressesPerInstance",
+      message: "Addresses per instance:",
       default: 10,
     },
     {
@@ -80,7 +80,7 @@ export async function initCommand(): Promise<void> {
   const config: Partial<Config> = {
     instanceType: instanceType,
     spotMaxPrice: answers.spotMaxPrice,
-    minersPerInstance: answers.minersPerInstance,
+    addressesPerInstance: answers.addressesPerInstance,
     apiUrl: "https://scavenger.prod.gd.midnighttge.io", // Official Scavenger Mine API
     awsRegions: [], // Region is now specified per-command
     keysDirectory: answers.keysDirectory,

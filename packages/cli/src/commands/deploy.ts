@@ -22,7 +22,7 @@ export async function deployCommand(options: DeploymentOptions): Promise<void> {
   const asgManager = new AutoScalingManager();
   const s3Registry = new S3RegistryManager(region);
 
-  const addressesPerInstance = parseInt(options.minersPerInstance?.toString() || "10");
+  const addressesPerInstance = parseInt(options.addressesPerInstance?.toString() || "10");
 
   // Parse instance count if provided
   let instanceCount: number | undefined;

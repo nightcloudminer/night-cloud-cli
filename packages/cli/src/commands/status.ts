@@ -11,7 +11,7 @@ export async function statusCommand(options: StatusOptions): Promise<void> {
 
   const config = loadConfig();
   const regions = options.region ? [options.region] : config.awsRegions;
-  
+
   // Use the first region for IAM (global service)
   const ec2Manager = new EC2Manager(regions[0]);
   const asgManager = new AutoScalingManager();
@@ -60,7 +60,7 @@ export async function statusCommand(options: StatusOptions): Promise<void> {
       // Summary
       console.log(chalk.gray("Summary:"));
       console.log(chalk.gray(`  Total instances: ${instances.length}`));
-      console.log(chalk.gray(`  Addresses per instance: ${config.minersPerInstance}`));
+      console.log(chalk.gray(`  Addresses per instance: ${config.addressesPerInstance}`));
       console.log(chalk.gray(`\n  Note: Address assignments are managed by instances via S3 registry\n`));
     } catch (error: any) {
       spinner.fail("Failed to fetch status");

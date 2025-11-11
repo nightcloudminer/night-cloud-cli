@@ -58,7 +58,7 @@ yargs(hideBin(process.argv))
           type: "number",
           description: "Number of instances (will calculate if not provided)",
         })
-        .option("miners-per-instance", {
+        .option("addresses-per-instance", {
           alias: "m",
           type: "number",
           description: "Number of addresses to mine per instance",
@@ -83,7 +83,7 @@ yargs(hideBin(process.argv))
       await deployCommand({
         region: argv.region,
         instances: argv.instances as number | undefined,
-        minersPerInstance: argv["miners-per-instance"],
+        addressesPerInstance: argv["addresses-per-instance"],
         instance: argv.instance,
         force: argv.force,
         refresh: argv.refresh,

@@ -9,7 +9,7 @@ const DEFAULT_CONFIG: Config = {
   securityGroupName: "night-cloud-miner-sg",
   instanceType: "c7g.xlarge",
   spotMaxPrice: "0.10",
-  minersPerInstance: 10,
+  addressesPerInstance: 10,
   apiUrl: "https://scavenger.prod.gd.midnighttge.io",
   amiNamePattern: "ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-arm64-server-*",
   keysDirectory: "./keys",

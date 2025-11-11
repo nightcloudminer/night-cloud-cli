@@ -5,7 +5,7 @@ export interface Config {
   readonly securityGroupName: string;
   readonly instanceType: string;
   readonly spotMaxPrice: string;
-  readonly minersPerInstance: number;
+  readonly addressesPerInstance: number;
   readonly apiUrl: string;
   readonly amiNamePattern: string;
   readonly keysDirectory: string;
@@ -50,7 +50,7 @@ export interface Registry {
 export interface DeploymentOptions {
   readonly region: string;
   readonly instances?: number;
-  readonly minersPerInstance?: number;
+  readonly addressesPerInstance?: number;
   readonly keyName?: string;
   readonly instance?: string;
   readonly force?: boolean;
