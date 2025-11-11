@@ -8,6 +8,7 @@
  */
 
 import { S3Client, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
+import { STSClient, GetCallerIdentityCommand } from "@aws-sdk/client-sts";
 import axios from "axios";
 import * as fs from "fs";
 
@@ -37,8 +38,16 @@ interface CachedData {
   cachedAt: string;
 }
 
-function getBucketName(region: string): string {
-  return `night-cloud-miner-registry-${region}`;
+async function getBucketName(region: string): Promise<string> {
+  try {
+    const sts = new STSClient({ region });
+    const identity = await sts.send(new GetCallerIdentityCommand({}));
+    const accountId = identity.Account;
+    return `night-cloud-miner-${accountId}-${region}`;
+  } catch (error) {
+    console.error(`❌ Error getting AWS account ID: ${error}`);
+    process.exit(1);
+  }
 }
 
 async function getIMDSv2Token(): Promise<string> {
@@ -89,7 +98,7 @@ async function getRegion(): Promise<string> {
 
 async function updateHeartbeat(instanceId: string, region: string): Promise<boolean> {
   const s3 = new S3Client({ region });
-  const bucket = getBucketName(region);
+  const bucket = await getBucketName(region);
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {

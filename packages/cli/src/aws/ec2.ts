@@ -102,19 +102,24 @@ export class EC2Manager {
         }),
       );
 
-      // Attach policy to allow accessing S3 registry and CloudWatch Logs
+      // Attach policy to allow accessing S3 registry, CloudWatch Logs, and STS
       const policy = {
         Version: "2012-10-17",
         Statement: [
           {
             Effect: "Allow",
             Action: ["s3:GetObject", "s3:PutObject", "s3:ListBucket"],
-            Resource: ["arn:aws:s3:::night-cloud-miner-registry-*", "arn:aws:s3:::night-cloud-miner-registry-*/*"],
+            Resource: ["arn:aws:s3:::night-cloud-miner-*", "arn:aws:s3:::night-cloud-miner-*/*"],
           },
           {
             Effect: "Allow",
             Action: ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents", "logs:DescribeLogStreams"],
             Resource: "arn:aws:logs:*:*:log-group:/night-cloud-miner/*",
+          },
+          {
+            Effect: "Allow",
+            Action: ["sts:GetCallerIdentity"],
+            Resource: "*",
           },
         ],
       };
@@ -265,9 +270,11 @@ echo "📦 Installing Node.js..."
 curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
 apt-get install -y -qq nodejs
 
-# Download miner code from S3 (region-specific bucket)
+# Download miner code from S3 (account and region-specific bucket)
 echo "📥 Downloading Night Cloud Miner from S3..."
-export BUCKET="night-cloud-miner-registry-$REGION"
+# Get AWS account ID from instance identity document
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+export BUCKET="night-cloud-miner-$ACCOUNT_ID-$REGION"
 echo "Bucket: $BUCKET"
 su - ubuntu -c "aws s3 cp s3://$BUCKET/miner-code.tar.gz /tmp/miner-code.tar.gz"
 tar -xzf /tmp/miner-code.tar.gz -C /home/ubuntu

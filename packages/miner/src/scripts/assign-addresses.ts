@@ -9,6 +9,7 @@
  */
 
 import { S3Client, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
+import { STSClient, GetCallerIdentityCommand } from "@aws-sdk/client-sts";
 import axios from "axios";
 import * as fs from "fs";
 import * as path from "path";
@@ -44,8 +45,16 @@ interface Assignment {
   lastHeartbeat?: string;
 }
 
-function getBucketName(region: string): string {
-  return `night-cloud-miner-registry-${region}`;
+async function getBucketName(region: string): Promise<string> {
+  try {
+    const sts = new STSClient({ region });
+    const identity = await sts.send(new GetCallerIdentityCommand({}));
+    const accountId = identity.Account;
+    return `night-cloud-miner-${accountId}-${region}`;
+  } catch (error) {
+    console.error(`❌ Error getting AWS account ID: ${error}`);
+    process.exit(1);
+  }
 }
 
 async function getIMDSv2Token(): Promise<string> {
@@ -111,7 +120,9 @@ function cleanupStaleAssignments(registry: Registry): boolean {
       // Has heartbeat - check if it's stale (>1.5 min)
       const lastHeartbeat = new Date(assignment.lastHeartbeat).getTime();
       if (now - lastHeartbeat > staleThreshold) {
-        console.error(`🧹 Cleaning stale assignment (old heartbeat): ${instanceId} (last: ${assignment.lastHeartbeat})`);
+        console.error(
+          `🧹 Cleaning stale assignment (old heartbeat): ${instanceId} (last: ${assignment.lastHeartbeat})`,
+        );
         delete registry.assignments[instanceId];
         cleaned = true;
       }
@@ -123,7 +134,7 @@ function cleanupStaleAssignments(registry: Registry): boolean {
 
 async function reserveAddresses(instanceId: string, region: string, publicIp: string): Promise<string[]> {
   const s3 = new S3Client({ region });
-  const bucket = getBucketName(region);
+  const bucket = await getBucketName(region);
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {

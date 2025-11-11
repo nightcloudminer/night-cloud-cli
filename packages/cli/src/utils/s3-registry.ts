@@ -6,6 +6,7 @@ import {
   GetObjectCommand,
   NoSuchKey,
 } from "@aws-sdk/client-s3";
+import { STSClient, GetCallerIdentityCommand } from "@aws-sdk/client-sts";
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
@@ -23,22 +24,47 @@ import * as crypto from "crypto";
  */
 export class S3RegistryManager {
   private s3Client: S3Client;
+  private stsClient: STSClient;
   private bucketName: string;
   private region: string;
   private registryKey: string = "registry.json";
   private minerCodeKey: string = "miner-code.tar.gz";
   private addressesKey: string = "addresses.json";
+  private accountId?: string;
 
   constructor(region: string) {
     this.region = region;
-    this.bucketName = `night-cloud-miner-registry-${region}`;
+    this.bucketName = ""; // Will be set after getting account ID
     this.s3Client = new S3Client({ region });
+    this.stsClient = new STSClient({ region });
+  }
+
+  /**
+   * Initialize the bucket name with the AWS account ID
+   * This ensures bucket names are globally unique
+   */
+  private async initializeBucketName(): Promise<void> {
+    if (this.bucketName) {
+      return; // Already initialized
+    }
+
+    try {
+      const identity = await this.stsClient.send(new GetCallerIdentityCommand({}));
+      this.accountId = identity.Account;
+      // Use account ID to ensure globally unique bucket name
+      this.bucketName = `night-cloud-miner-${this.accountId}-${this.region}`;
+    } catch (error) {
+      throw new Error(`Failed to get AWS account ID: ${error}`);
+    }
   }
 
   /**
    * Ensure the S3 bucket exists and initialize empty registry
    */
   async ensureBucket(): Promise<void> {
+    // Initialize bucket name with account ID
+    await this.initializeBucketName();
+
     // Create bucket if it doesn't exist
     try {
       await this.s3Client.send(new HeadBucketCommand({ Bucket: this.bucketName }));
@@ -79,6 +105,9 @@ export class S3RegistryManager {
    * This allows instances to download the miner code instead of cloning from GitHub
    */
   async uploadMinerCode(tarballPath: string): Promise<string> {
+    // Initialize bucket name with account ID
+    await this.initializeBucketName();
+
     // Read the tarball
     const fileContent = fs.readFileSync(tarballPath);
     
@@ -105,14 +134,16 @@ export class S3RegistryManager {
   /**
    * Get the S3 URL for the miner code
    */
-  getMinerCodeUrl(): string {
+  async getMinerCodeUrl(): Promise<string> {
+    await this.initializeBucketName();
     return `s3://${this.bucketName}/${this.minerCodeKey}`;
   }
 
   /**
    * Get the bucket name
    */
-  getBucketName(): string {
+  async getBucketName(): Promise<string> {
+    await this.initializeBucketName();
     return this.bucketName;
   }
 
@@ -128,6 +159,9 @@ export class S3RegistryManager {
    * Creates or updates the registry.json file with addresses and empty assignments
    */
   async initializeRegistry(addresses: string[], addressesPerInstance: number): Promise<void> {
+    // Initialize bucket name with account ID
+    await this.initializeBucketName();
+
     const registry = {
       addresses: addresses,
       assignments: {},
