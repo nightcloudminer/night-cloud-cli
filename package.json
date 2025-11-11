@@ -1,6 +1,6 @@
 {
   "name": "night-cloud-miner",
-  "version": "0.1.0",
+  "version": "0.0.0",
   "description": "Night Cloud Miner - Distributed Cardano mining on AWS",
   "private": true,
   "scripts": {
