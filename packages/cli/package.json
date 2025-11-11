@@ -1,0 +1,82 @@
+{
+  "name": "@night-cloud/cli",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Open source cloud mining CLI for Midnight's Scavenger Mine. Deploy in one click on AWS with the fastest Rust implementation.",
+  "main": "dist/cli.js",
+  "bin": {
+    "night-cloud": "./dist/cli.js",
+    "night": "./dist/cli.js"
+  },
+  "files": [
+    "dist/**/*",
+    "!dist/**/*.map",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "npm run build:typecheck && npm run build:bundle && npm run build:miner",
+    "build:typecheck": "tsc --noEmit",
+    "build:bundle": "mkdir -p dist && esbuild src/cli.ts --bundle --platform=node --target=node20 --outfile=dist/cli.js --external:@emurgo/cardano-serialization-lib-nodejs --format=cjs && chmod +x dist/cli.js && mkdir -p dist/lib && cp src/lib/cardano-signer.js dist/lib/",
+    "build:miner": "cd ../miner && npm run build && cd ../cli && node scripts/package-miner.js",
+    "prepublishOnly": "npm run build",
+    "start": "ts-node src/cli.ts",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "mining",
+    "cardano",
+    "midnight",
+    "aws",
+    "cloud"
+  ],
+  "author": "nightcloudminer@gmail.com",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nightcloudminer/night-cloud-cli.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/nightcloudminer/night-cloud-cli#readme",
+  "bugs": {
+    "url": "https://github.com/nightcloudminer/night-cloud-cli/issues"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@aws-sdk/client-auto-scaling": "^3.600.0",
+    "@aws-sdk/client-cloudwatch-logs": "^3.600.0",
+    "@aws-sdk/client-ec2": "^3.600.0",
+    "@aws-sdk/client-iam": "^3.600.0",
+    "@aws-sdk/client-s3": "^3.600.0",
+    "@emurgo/cardano-serialization-lib-nodejs": "^12.0.0",
+    "axios": "^1.7.2",
+    "base64url": "^3.0.1",
+    "bech32": "^2.0.0",
+    "bip39": "^3.1.0",
+    "blakejs": "^1.2.1",
+    "cardano-wallet": "^1.2.2",
+    "cbor": "^9.0.2",
+    "chalk": "^4.1.2",
+    "crc": "^4.3.2",
+    "fnv32": "^0.0.1",
+    "inquirer": "^8.2.6",
+    "jsonld": "^8.3.2",
+    "minimist": "^1.2.8",
+    "secp256k1": "^5.0.0",
+    "yargs": "^17.7.2",
+    "ora": "^5.4.1",
+    "table": "^6.8.2",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/inquirer": "^8.2.10",
+    "@types/node": "^20.12.12",
+    "@types/yargs": "^17.0.32",
+    "esbuild": "^0.27.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.5"
+  }
+}
+

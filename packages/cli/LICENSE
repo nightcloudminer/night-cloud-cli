@@ -1,0 +1,44 @@
+MIT License
+
+Copyright (c) 2025 Night Cloud
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+DISCLAIMER:
+
+This software is provided for educational and experimental purposes. Users are
+solely responsible for:
+
+1. AWS costs incurred from deploying and running mining infrastructure
+2. Compliance with all applicable laws and regulations in their jurisdiction
+3. Security of their private keys and wallet credentials
+4. Any financial losses or damages resulting from the use of this software
+5. Monitoring and managing their cloud resources
+
+The authors and contributors of this software:
+- Make no guarantees about mining profitability or returns
+- Are not responsible for any AWS charges, fees, or costs
+- Provide no warranty regarding the security or reliability of the software
+- Are not liable for any loss of funds, data, or access to resources
+
+USE AT YOUR OWN RISK. Always test with small amounts first and monitor your
+AWS billing closely.
+

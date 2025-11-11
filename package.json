@@ -1,0 +1,28 @@
+{
+  "name": "night-cloud-miner",
+  "version": "0.1.0",
+  "description": "Night Cloud Miner - Distributed Cardano mining on AWS",
+  "private": true,
+  "scripts": {
+    "build": "pnpm -r build",
+    "clean": "pnpm -r clean",
+    "dev:cli": "pnpm --filter @night-cloud/cli dev",
+    "dev:miner": "pnpm --filter @night-cloud/miner dev",
+    "dev:app": "pnpm --filter @night-cloud/app dev",
+    "mine": "pnpm --filter @night-cloud/cli build && node packages/cli/dist/cli.js mine",
+    "mine:local": "cd packages/cli && ts-node src/cli.ts mine",
+    "publish": "./publish.sh"
+  },
+  "keywords": [
+    "mining",
+    "cardano",
+    "midnight",
+    "aws",
+    "cloud"
+  ],
+  "author": "nightcloudminer@gmail.com",
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.4.5"
+  }
+}

@@ -1,0 +1,49 @@
+# Dependencies
+node_modules/
+pnpm-lock.yaml
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Rust build
+rust/target/
+rust/Cargo.lock
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Config
+.night-config.json
+
+# Keys (IMPORTANT: Never commit wallet keys!)
+keys/
+*.skey
+*.vkey
+*.addr
+
+# Logs
+logs/
+*.log
+
+# Registry
+.night-registry.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Temporary files
+.temp-*
+.tmp-*
+tmp/
+miner-code.tar.gz
