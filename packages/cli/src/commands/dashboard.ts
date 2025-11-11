@@ -44,17 +44,24 @@ function resetSession(totalSolutions: number): void {
 // Read version from package.json
 function getVersion(): string {
   try {
-    // From dist/commands/ to package.json at root of cli package
-    const pkgPath = path.join(__dirname, "../../package.json");
-    if (fs.existsSync(pkgPath)) {
-      const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
-      if (pkg.version) {
-        return pkg.version;
+    // Try multiple paths since the code might be bundled or run from source
+    const possiblePaths = [
+      path.join(__dirname, "../../package.json"), // From dist/commands/ (unbundled)
+      path.join(__dirname, "../package.json"), // From dist/ (bundled)
+      path.join(__dirname, "package.json"), // Same directory (edge case)
+    ];
+
+    for (const pkgPath of possiblePaths) {
+      if (fs.existsSync(pkgPath)) {
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+        if (pkg.version) {
+          return pkg.version;
+        }
       }
     }
-    return "0.4.0";
+    return "0.5.0";
   } catch {
-    return "0.4.0";
+    return "0.5.0";
   }
 }
 
