@@ -101,37 +101,37 @@ export class EC2Manager {
           Description: "Role for Night Cloud Miner instances to access S3 registry",
         }),
       );
-
-      // Attach policy to allow accessing S3 registry, CloudWatch Logs, and STS
-      const policy = {
-        Version: "2012-10-17",
-        Statement: [
-          {
-            Effect: "Allow",
-            Action: ["s3:GetObject", "s3:PutObject", "s3:ListBucket"],
-            Resource: ["arn:aws:s3:::night-cloud-miner-*", "arn:aws:s3:::night-cloud-miner-*/*"],
-          },
-          {
-            Effect: "Allow",
-            Action: ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents", "logs:DescribeLogStreams"],
-            Resource: "arn:aws:logs:*:*:log-group:/night-cloud-miner/*",
-          },
-          {
-            Effect: "Allow",
-            Action: ["sts:GetCallerIdentity"],
-            Resource: "*",
-          },
-        ],
-      };
-
-      await this.iamClient.send(
-        new PutRolePolicyCommand({
-          RoleName: roleName,
-          PolicyName: "NightCloudMinerAccess",
-          PolicyDocument: JSON.stringify(policy),
-        }),
-      );
     }
+
+    // Always update the policy to ensure it has the latest permissions
+    const policy = {
+      Version: "2012-10-17",
+      Statement: [
+        {
+          Effect: "Allow",
+          Action: ["s3:GetObject", "s3:PutObject", "s3:ListBucket"],
+          Resource: ["arn:aws:s3:::night-cloud-miner-*", "arn:aws:s3:::night-cloud-miner-*/*"],
+        },
+        {
+          Effect: "Allow",
+          Action: ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents", "logs:DescribeLogStreams"],
+          Resource: "arn:aws:logs:*:*:log-group:/night-cloud-miner/*",
+        },
+        {
+          Effect: "Allow",
+          Action: ["sts:GetCallerIdentity"],
+          Resource: "*",
+        },
+      ],
+    };
+
+    await this.iamClient.send(
+      new PutRolePolicyCommand({
+        RoleName: roleName,
+        PolicyName: "NightCloudMinerAccess",
+        PolicyDocument: JSON.stringify(policy),
+      }),
+    );
 
     // Create instance profile if it doesn't exist
     try {
@@ -272,8 +272,23 @@ apt-get install -y -qq nodejs
 
 # Download miner code from S3 (account and region-specific bucket)
 echo "📥 Downloading Night Cloud Miner from S3..."
-# Get AWS account ID from instance identity document
-ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+# Get AWS account ID with retry logic (IAM role might not be ready immediately)
+ACCOUNT_ID=""
+for i in {1..10}; do
+  ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/null)
+  if [ -n "$ACCOUNT_ID" ]; then
+    echo "✅ Got AWS account ID: $ACCOUNT_ID"
+    break
+  fi
+  echo "⏳ Waiting for IAM role to be ready (attempt $i/10)..."
+  sleep 5
+done
+
+if [ -z "$ACCOUNT_ID" ]; then
+  echo "❌ Failed to get AWS account ID after 10 attempts"
+  exit 1
+fi
+
 export BUCKET="night-cloud-miner-$ACCOUNT_ID-$REGION"
 echo "Bucket: $BUCKET"
 su - ubuntu -c "aws s3 cp s3://$BUCKET/miner-code.tar.gz /tmp/miner-code.tar.gz"
@@ -392,9 +407,16 @@ while true; do
   # Get addresses (from cache or S3 registry)
   # First run: reserves from S3 and caches locally
   # Subsequent runs: uses cached addresses
-  # Only capture stdout (addresses), let stderr go to logs
-  ADDRESSES=$(node /home/ubuntu/miner/dist/scripts/assign-addresses.js 2>/dev/stderr)
+  # Redirect stderr to a temp file to prevent mixing with stdout
+  STDERR_FILE="/tmp/assign-addresses-stderr.log"
+  ADDRESSES=$(node /home/ubuntu/miner/dist/scripts/assign-addresses.js 2>"$STDERR_FILE")
   EXIT_CODE=$?
+  
+  # Show stderr output in logs
+  if [ -f "$STDERR_FILE" ]; then
+    cat "$STDERR_FILE"
+    rm "$STDERR_FILE"
+  fi
   
   if [ $EXIT_CODE -eq 0 ] && [ -n "$ADDRESSES" ]; then
     ADDRESS_COUNT=$(echo $ADDRESSES | tr ',' '\\n' | wc -l)
