@@ -1,6 +1,6 @@
 {
   "name": "@night-cloud/cli",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": false,
   "description": "Open source cloud mining CLI for Midnight's Scavenger Mine. Deploy in one click on AWS with the fastest Rust implementation.",
   "main": "dist/cli.js",
