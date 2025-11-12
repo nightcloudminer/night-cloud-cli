@@ -15,6 +15,16 @@ export interface SolutionRecord {
   instanceId?: string;
 }
 
+export interface PendingSolution {
+  address: string;
+  challengeId: string;
+  nonce: string;
+  isDonation: boolean;
+  failedAt: string;
+  error: string;
+  retryCount: number;
+}
+
 export interface AddressSolutions {
   address: string;
   solutions: SolutionRecord[];
@@ -48,6 +58,7 @@ export class SolutionTracker {
   private region: string;
   private solutionsPrefix: string = "solutions/";
   private statsKey: string = "solutions-stats.json";
+  private pendingSolutionsKey: string = "pending-solutions.json";
   private solutionCache: Map<string, Set<string>> = new Map(); // address -> Set of challengeIds
   private cacheLoaded: boolean = false;
 
@@ -518,5 +529,190 @@ export class SolutionTracker {
     }
 
     return JSON.parse(body) as AddressSolutions;
+  }
+
+  /**
+   * Store a pending solution for retry
+   * These are solutions that failed to submit due to unknown errors
+   */
+  async storePendingSolution(
+    address: string,
+    challengeId: string,
+    nonce: string,
+    error: string,
+    isDonation: boolean = false,
+  ): Promise<void> {
+    await this.initializeBucketName();
+
+    const maxRetries = 5;
+
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        // Load existing pending solutions with ETag
+        let pendingSolutions: PendingSolution[] = [];
+        let etag: string | undefined;
+
+        try {
+          const response = await this.s3Client.send(
+            new GetObjectCommand({
+              Bucket: this.bucketName,
+              Key: this.pendingSolutionsKey,
+            }),
+          );
+          const body = await response.Body?.transformToString();
+          if (body) {
+            pendingSolutions = JSON.parse(body);
+          }
+          etag = response.ETag;
+        } catch (error: any) {
+          if (error.name !== "NoSuchKey") {
+            throw error;
+          }
+          // File doesn't exist yet, that's fine
+        }
+
+        // Check if this solution is already pending
+        const existingIndex = pendingSolutions.findIndex((s) => s.address === address && s.challengeId === challengeId);
+
+        if (existingIndex >= 0) {
+          // Update retry count for existing pending solution
+          pendingSolutions[existingIndex].retryCount++;
+          pendingSolutions[existingIndex].error = error;
+          pendingSolutions[existingIndex].failedAt = new Date().toISOString();
+        } else {
+          // Add new pending solution
+          pendingSolutions.push({
+            address,
+            challengeId,
+            nonce,
+            isDonation,
+            failedAt: new Date().toISOString(),
+            error,
+            retryCount: 0,
+          });
+        }
+
+        // Write back to S3 with conditional write
+        await this.s3Client.send(
+          new PutObjectCommand({
+            Bucket: this.bucketName,
+            Key: this.pendingSolutionsKey,
+            Body: JSON.stringify(pendingSolutions, null, 2),
+            ContentType: "application/json",
+            IfMatch: etag,
+          }),
+        );
+
+        console.log(`💾 Stored pending solution for retry: ${address.substring(0, 20)}... on ${challengeId}`);
+        return;
+      } catch (error: any) {
+        // If we got a precondition failed error, retry
+        if (error.name === "PreconditionFailed" && attempt < maxRetries - 1) {
+          await new Promise((resolve) => setTimeout(resolve, Math.random() * 100));
+          continue;
+        }
+
+        // For other errors or if we've exhausted retries, throw
+        throw error;
+      }
+    }
+  }
+
+  /**
+   * Get all pending solutions that need to be retried
+   */
+  async getPendingSolutions(): Promise<PendingSolution[]> {
+    await this.initializeBucketName();
+
+    try {
+      const response = await this.s3Client.send(
+        new GetObjectCommand({
+          Bucket: this.bucketName,
+          Key: this.pendingSolutionsKey,
+        }),
+      );
+
+      const body = await response.Body?.transformToString();
+      if (!body) {
+        return [];
+      }
+
+      return JSON.parse(body) as PendingSolution[];
+    } catch (error: any) {
+      if (error.name === "NoSuchKey") {
+        return [];
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Remove a pending solution after successful retry
+   */
+  async clearPendingSolution(address: string, challengeId: string): Promise<void> {
+    await this.initializeBucketName();
+
+    const maxRetries = 5;
+
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        // Load existing pending solutions with ETag
+        let pendingSolutions: PendingSolution[] = [];
+        let etag: string | undefined;
+
+        try {
+          const response = await this.s3Client.send(
+            new GetObjectCommand({
+              Bucket: this.bucketName,
+              Key: this.pendingSolutionsKey,
+            }),
+          );
+          const body = await response.Body?.transformToString();
+          if (body) {
+            pendingSolutions = JSON.parse(body);
+          }
+          etag = response.ETag;
+        } catch (error: any) {
+          if (error.name === "NoSuchKey") {
+            // No pending solutions file, nothing to clear
+            return;
+          }
+          throw error;
+        }
+
+        // Remove the solution
+        const filteredSolutions = pendingSolutions.filter(
+          (s) => !(s.address === address && s.challengeId === challengeId),
+        );
+
+        // If nothing changed, we're done
+        if (filteredSolutions.length === pendingSolutions.length) {
+          return;
+        }
+
+        // Write back to S3 with conditional write
+        await this.s3Client.send(
+          new PutObjectCommand({
+            Bucket: this.bucketName,
+            Key: this.pendingSolutionsKey,
+            Body: JSON.stringify(filteredSolutions, null, 2),
+            ContentType: "application/json",
+            IfMatch: etag,
+          }),
+        );
+
+        console.log(`✅ Cleared pending solution: ${address.substring(0, 20)}... on ${challengeId}`);
+        return;
+      } catch (error: any) {
+        // If we got a precondition failed error, retry
+        if (error.name === "PreconditionFailed" && attempt < maxRetries - 1) {
+          await new Promise((resolve) => setTimeout(resolve, Math.random() * 100));
+          continue;
+        }
+
+        // For other errors or if we've exhausted retries, throw
+        throw error;
+      }
+    }
   }
 }

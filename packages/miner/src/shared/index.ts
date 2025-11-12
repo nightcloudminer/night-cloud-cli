@@ -1,5 +1,5 @@
 // API Client
-export { ScavengerMineAPI } from "./api-client";
+export { ScavengerMineAPI, ApiSubmissionError } from "./api-client";
 
 // API Schemas
 export * from "./api";
@@ -15,4 +15,3 @@ export type {
   WorkToStarRate,
   ApiError,
 } from "./api";
-

@@ -18,6 +18,19 @@ import {
   type WorkToStarRate,
 } from "./api";
 
+/**
+ * Custom error class that includes HTTP status code
+ */
+export class ApiSubmissionError extends Error {
+  public statusCode?: number;
+
+  constructor(message: string, statusCode?: number) {
+    super(message);
+    this.name = "ApiSubmissionError";
+    this.statusCode = statusCode;
+  }
+}
+
 export class ScavengerMineAPI {
   private client: AxiosInstance;
 
@@ -108,11 +121,13 @@ export class ScavengerMineAPI {
     } catch (error) {
       // Check if solution already exists (409 Conflict)
       if (axios.isAxiosError(error) && error.response?.status === 409) {
-        throw new Error("Solution already exists");
+        throw new ApiSubmissionError("Solution already exists", 409);
       }
-      // Include API error details in the error message
-      if (axios.isAxiosError(error) && error.response?.data) {
-        throw new Error(`Failed to submit solution: ${JSON.stringify(error.response.data)}`);
+      // Include API error details and status code in the error
+      if (axios.isAxiosError(error) && error.response) {
+        const statusCode = error.response.status;
+        const errorData = error.response.data;
+        throw new ApiSubmissionError(`Failed to submit solution: ${JSON.stringify(errorData)}`, statusCode);
       }
       throw this.handleApiError(error, "Failed to submit solution");
     }

@@ -1,4 +1,4 @@
-import { ScavengerMineAPI, Challenge, NoChallenge } from "./shared";
+import { ScavengerMineAPI, Challenge, NoChallenge, ApiSubmissionError } from "./shared";
 import { RustMinerWrapper } from "./rust-miner";
 import { SolutionTracker } from "./solution-tracker";
 import { ChallengeQueueManager } from "./challenge-queue";
@@ -27,6 +27,8 @@ export class MiningOrchestrator {
   private lastChallengeFetch: number = 0; // Timestamp of last challenge fetch
   private workerChallenges: Map<number, { challengeId: string; expiresAt: Date }> = new Map(); // Track which challenge each worker is mining
   private expirationCheckInterval: NodeJS.Timeout | null = null; // Interval for checking expired challenges
+  private retryInterval: NodeJS.Timeout | null = null; // Interval for retrying failed solutions
+  private lastRetryAttempt: number = 0; // Timestamp of last retry attempt
 
   constructor(addresses: string[], apiUrl: string, region: string, rustBinaryPath?: string, workerCount?: number) {
     this.api = new ScavengerMineAPI(apiUrl);
@@ -61,10 +63,19 @@ export class MiningOrchestrator {
     // Preload all solutions into cache for fast work queue building
     await this.solutionTracker.preloadSolutions(this.addresses);
 
+    // Attempt to retry any pending solutions immediately on startup
+    console.log("🔄 Checking for pending solutions from previous runs...");
+    await this.retryPendingSolutions();
+
     // Start periodic check for expired challenges (every 10 seconds)
     this.expirationCheckInterval = setInterval(() => {
       this.checkAndAbortExpiredWork();
     }, 10000);
+
+    // Start periodic retry of failed solutions (every 10 minutes)
+    this.retryInterval = setInterval(() => {
+      this.retryPendingSolutions();
+    }, 600000); // 10 minutes
 
     await this.miningLoop();
   }
@@ -78,6 +89,10 @@ export class MiningOrchestrator {
     if (this.expirationCheckInterval) {
       clearInterval(this.expirationCheckInterval);
       this.expirationCheckInterval = null;
+    }
+    if (this.retryInterval) {
+      clearInterval(this.retryInterval);
+      this.retryInterval = null;
     }
     console.log("🛑 Mining orchestrator stopped");
   }
@@ -292,7 +307,12 @@ export class MiningOrchestrator {
           }
 
           // Submit solution
-          await this.submitSolution(workItem.address, workItem.challenge.challengeId, result.nonce, workItem.isDonation);
+          await this.submitSolution(
+            workItem.address,
+            workItem.challenge.challengeId,
+            result.nonce,
+            workItem.isDonation,
+          );
 
           // Mark work item as complete
           this.workQueue.complete(workItem.id);
@@ -349,7 +369,12 @@ export class MiningOrchestrator {
   /**
    * Submit a solution to the API
    */
-  private async submitSolution(address: string, challengeId: string, nonce: string, isDonation: boolean = false): Promise<void> {
+  private async submitSolution(
+    address: string,
+    challengeId: string,
+    nonce: string,
+    isDonation: boolean = false,
+  ): Promise<void> {
     try {
       console.log(`📤 Submitting solution for ${address.substring(0, 20)}...`);
 
@@ -384,10 +409,27 @@ export class MiningOrchestrator {
         await this.solutionTracker.recordSolution(address, challengeId, nonce, undefined, isDonation);
       } else {
         console.error(`❌ Failed to submit solution:`, error);
-        
+
         // Record the error for tracking
         const errorMessage = error.message || String(error);
         await this.solutionTracker.recordError(address, challengeId, errorMessage, isDonation);
+
+        // Only store the solution for retry if it's a 5XX server error
+        // Client errors (4XX) should not be retried as they indicate invalid requests
+        const shouldRetry =
+          error instanceof ApiSubmissionError && error.statusCode && error.statusCode >= 500 && error.statusCode < 600;
+
+        if (shouldRetry) {
+          console.log(`🔄 Server error (${(error as ApiSubmissionError).statusCode}) - storing solution for retry`);
+          try {
+            await this.solutionTracker.storePendingSolution(address, challengeId, nonce, errorMessage, isDonation);
+          } catch (storeError) {
+            console.error(`⚠️  Failed to store pending solution:`, storeError);
+          }
+        } else {
+          const statusCode = error instanceof ApiSubmissionError ? error.statusCode : "unknown";
+          console.log(`⚠️  Client error (${statusCode}) - not storing for retry`);
+        }
       }
     }
   }
@@ -430,5 +472,111 @@ export class MiningOrchestrator {
    */
   setWorkCheckInterval(ms: number): void {
     this.workCheckInterval = ms;
+  }
+
+  /**
+   * Retry pending solutions that failed to submit
+   * Runs periodically to retry solutions in bulk
+   */
+  private async retryPendingSolutions(): Promise<void> {
+    try {
+      const now = Date.now();
+
+      // Avoid running too frequently (minimum 10 minutes between retries)
+      if (now - this.lastRetryAttempt < 600000) {
+        return;
+      }
+
+      this.lastRetryAttempt = now;
+
+      console.log("\n🔄 Checking for pending solutions to retry...");
+
+      const pendingSolutions = await this.solutionTracker.getPendingSolutions();
+
+      if (pendingSolutions.length === 0) {
+        console.log("✅ No pending solutions to retry");
+        return;
+      }
+
+      console.log(`📋 Found ${pendingSolutions.length} pending solution(s) to retry`);
+
+      let successCount = 0;
+      let failCount = 0;
+      let alreadyExistsCount = 0;
+
+      for (const pending of pendingSolutions) {
+        try {
+          console.log(
+            `🔁 Retrying solution for ${pending.address.substring(0, 20)}... on ${pending.challengeId} (attempt ${
+              pending.retryCount + 1
+            })`,
+          );
+
+          // Try to submit the solution again
+          const receipt = await this.api.submitSolution(pending.address, pending.challengeId, pending.nonce);
+
+          console.log(`✅ Retry successful!`);
+          if (receipt.timestamp) {
+            console.log(`   Receipt timestamp: ${receipt.timestamp}`);
+          }
+
+          // Record the successful solution
+          await this.solutionTracker.recordSolution(
+            pending.address,
+            pending.challengeId,
+            pending.nonce,
+            undefined,
+            pending.isDonation,
+          );
+
+          // Clear from pending list
+          await this.solutionTracker.clearPendingSolution(pending.address, pending.challengeId);
+
+          successCount++;
+        } catch (error: any) {
+          if (error.message.includes("already exists")) {
+            console.log(`ℹ️  Solution already exists - removing from pending list`);
+
+            // Record it as successful and clear from pending
+            await this.solutionTracker.recordSolution(
+              pending.address,
+              pending.challengeId,
+              pending.nonce,
+              undefined,
+              pending.isDonation,
+            );
+            await this.solutionTracker.clearPendingSolution(pending.address, pending.challengeId);
+
+            alreadyExistsCount++;
+          } else {
+            console.error(`❌ Retry failed:`, error.message);
+
+            // Update the pending solution with new error info (increments retry count)
+            try {
+              await this.solutionTracker.storePendingSolution(
+                pending.address,
+                pending.challengeId,
+                pending.nonce,
+                error.message || String(error),
+                pending.isDonation,
+              );
+            } catch (storeError) {
+              console.error(`⚠️  Failed to update pending solution:`, storeError);
+            }
+
+            failCount++;
+          }
+        }
+
+        // Add a small delay between retries to avoid overwhelming the API
+        await this.sleep(1000);
+      }
+
+      console.log(
+        `\n📊 Retry summary: ${successCount} succeeded, ${alreadyExistsCount} already existed, ${failCount} failed`,
+      );
+    } catch (error) {
+      console.error("❌ Error in retry mechanism:", error);
+    }
   }
 }
