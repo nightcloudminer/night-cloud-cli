@@ -228,6 +228,11 @@ yargs(hideBin(process.argv))
           type: "number",
           description: "Starting miner number",
           default: 0,
+        })
+        .option("auto", {
+          type: "boolean",
+          description: "Auto mode: continuously generate 50 wallets with 60s cooldown",
+          default: false,
         });
     },
     async (argv) => {
@@ -237,6 +242,7 @@ yargs(hideBin(process.argv))
         list: argv.list,
         register: argv.register,
         start: argv.start,
+        auto: argv.auto,
       });
     },
   )

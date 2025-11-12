@@ -40,6 +40,10 @@ npx @night-cloud/cli wallet --region ap-south-1 --generate 50
 # If you get rate limited (happens often), you can automatically retry wallet registration
 npx @night-cloud/cli wallet --region ap-south-1 --register
 
+# Or use AUTO MODE to continuously generate wallets with built-in rate limit handling
+# Generates 50 wallets per batch with 60s cooldown between batches
+npx @night-cloud/cli wallet --region ap-south-1 --auto
+
 # 3. Deploy to AWS
 # By default, 10 addresses are attached per EC2 instance (c7g.xlarge)
 # This is more than enough for most deployments
@@ -152,7 +156,20 @@ night-cloud wallet --region ap-south-1 --list
 
 # Register existing wallets with API
 night-cloud wallet --region ap-south-1 --register
+
+# AUTO MODE: Continuously generate wallets with rate limit protection
+# Generates 50 wallets per batch, waits 60s between batches
+# Perfect for bulk wallet generation - just let it run!
+night-cloud wallet --region ap-south-1 --auto
 ```
+
+**Auto Mode Features**:
+- 🤖 Generates 50 wallets per batch automatically
+- ⏳ Built-in 60-second cooldown between batches to avoid rate limits
+- 🔄 Runs continuously until you stop it (Ctrl+C)
+- 📊 Shows progress, batch numbers, and countdown timer
+- ✅ Automatically registers wallets with the API
+- 🛡️ Error recovery - continues even if a batch fails
 
 ### `logs`
 View CloudWatch logs from instances

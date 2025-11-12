@@ -10,6 +10,7 @@ export interface WalletCommandOptions {
   readonly list?: boolean;
   readonly start?: number;
   readonly region?: string;
+  readonly auto?: boolean;
 }
 
 export async function walletCommand(options: WalletCommandOptions): Promise<void> {
@@ -20,6 +21,89 @@ export async function walletCommand(options: WalletCommandOptions): Promise<void
   const walletManager = new CardanoWalletManager(config.apiUrl, config.keysDirectory, region);
 
   try {
+    // Auto mode: continuously generate 50 wallets with 60s cooldown
+    if (options.auto) {
+      if (!region) {
+        console.log(chalk.red("Error: --region is required for auto mode"));
+        console.log(chalk.gray("Example: night wallet --region ap-south-1 --auto"));
+        process.exit(1);
+      }
+
+      console.log(chalk.blue.bold("🤖 Auto Mode Enabled"));
+      console.log(chalk.gray("Generating 50 wallets per batch with 60s cooldown between batches"));
+      console.log(chalk.gray("Press Ctrl+C to stop\n"));
+
+      let batchNumber = 1;
+
+      while (true) {
+        try {
+          const startNumber = walletManager.getNextMinerNumber();
+
+          console.log(chalk.cyan(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`));
+          console.log(chalk.cyan(`Batch #${batchNumber} - Starting from miner${startNumber}`));
+          console.log(chalk.cyan(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`));
+
+          const spinner = ora("Generating 50 wallets...").start();
+
+          const wallets = await walletManager.generateWallets({
+            startNumber,
+            count: 50,
+          });
+
+          spinner.succeed(`Generated ${wallets.length} wallets (miner${startNumber} - miner${startNumber + 49})`);
+
+          // Register wallets
+          console.log(chalk.blue("\nRegistering wallets with Scavenger Mine API...\n"));
+
+          const regSpinner = ora("Registering wallets...").start();
+
+          const results = await walletManager.registerWallets(wallets);
+          const successful = results.filter((r) => r.success).length;
+          const failed = results.filter((r) => !r.success).length;
+
+          if (failed === 0) {
+            regSpinner.succeed(`All ${successful} wallets registered successfully`);
+          } else {
+            regSpinner.warn(`${successful} succeeded, ${failed} failed`);
+
+            // Show failed registrations
+            console.log(chalk.red("\nFailed registrations:"));
+            results
+              .filter((r) => !r.success)
+              .forEach((r) => {
+                console.log(chalk.red(`  ✗ ${r.address}: ${r.error}`));
+              });
+          }
+
+          console.log(chalk.green(`\n✓ Batch #${batchNumber} complete!`));
+          console.log(chalk.gray(`Total wallets created: ${startNumber + 50}`));
+
+          // Cooldown
+          console.log(chalk.yellow(`\n⏳ Cooling down for 60 seconds to avoid rate limits...`));
+
+          for (let i = 60; i > 0; i--) {
+            process.stdout.write(chalk.gray(`\r   ${i}s remaining...`));
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+          }
+
+          process.stdout.write("\r" + " ".repeat(50) + "\r"); // Clear the countdown line
+
+          batchNumber++;
+        } catch (error: any) {
+          console.error(chalk.red(`\n✗ Error in batch #${batchNumber}: ${error.message}`));
+          console.log(chalk.yellow("Waiting 60 seconds before retrying...\n"));
+
+          for (let i = 60; i > 0; i--) {
+            process.stdout.write(chalk.gray(`\r   ${i}s remaining...`));
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+          }
+
+          process.stdout.write("\r" + " ".repeat(50) + "\r");
+          batchNumber++;
+        }
+      }
+    }
+
     // List existing wallets
     if (options.list) {
       if (region) {
