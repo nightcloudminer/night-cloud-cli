@@ -156,16 +156,37 @@ export class S3RegistryManager {
 
   /**
    * Initialize registry with wallet addresses
-   * Creates or updates the registry.json file with addresses and empty assignments
+   * Creates or updates the registry.json file with addresses
+   * Preserves existing assignments if registry already exists
    */
   async initializeRegistry(addresses: string[], addressesPerInstance: number): Promise<void> {
     // Initialize bucket name with account ID
     await this.initializeBucketName();
 
+    // Try to load existing registry to preserve assignments
+    let existingRegistry: any = null;
+    try {
+      const response = await this.s3Client.send(
+        new GetObjectCommand({
+          Bucket: this.bucketName,
+          Key: this.registryKey,
+        }),
+      );
+      const body = await response.Body?.transformToString();
+      if (body) {
+        existingRegistry = JSON.parse(body);
+      }
+    } catch (error: any) {
+      // Registry doesn't exist yet, that's fine
+      if (error.name !== "NoSuchKey") {
+        throw error;
+      }
+    }
+
     const registry = {
       addresses: addresses,
-      assignments: {},
-      nextAvailable: 0,
+      assignments: existingRegistry?.assignments || {},
+      nextAvailable: existingRegistry?.nextAvailable || 0,
       lastUpdated: new Date().toISOString(),
       region: this.region,
       addressesPerInstance: addressesPerInstance,
