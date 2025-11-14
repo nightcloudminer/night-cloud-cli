@@ -28,7 +28,6 @@ interface InstanceMetadata {
 interface Registry {
   assignments: Record<string, Assignment>;
   addresses: string[];
-  nextAvailable: number;
   lastUpdated: string;
   addressesPerInstance?: number; // Optional for backward compatibility
   region?: string;
@@ -132,6 +131,43 @@ function cleanupStaleAssignments(registry: Registry): boolean {
   return cleaned;
 }
 
+/**
+ * Find the first available gap of N consecutive addresses.
+ * Returns the starting index, or -1 if no gap is available.
+ */
+function findAvailableAddressRange(registry: Registry, count: number): number {
+  if (Object.keys(registry.assignments).length === 0) {
+    // No assignments, start from beginning
+    return 0;
+  }
+
+  // Build a set of all assigned address indices
+  const assignedIndices = new Set<number>();
+  for (const assignment of Object.values(registry.assignments)) {
+    for (let i = assignment.startAddress; i <= assignment.endAddress; i++) {
+      assignedIndices.add(i);
+    }
+  }
+
+  // Find first gap of 'count' consecutive addresses
+  for (let start = 0; start <= registry.addresses.length - count; start++) {
+    let gapFound = true;
+    for (let i = start; i < start + count; i++) {
+      if (assignedIndices.has(i)) {
+        gapFound = false;
+        // Skip ahead to after this assigned block
+        start = i;
+        break;
+      }
+    }
+    if (gapFound) {
+      return start;
+    }
+  }
+
+  return -1; // No gap available
+}
+
 async function reserveAddresses(instanceId: string, region: string, publicIp: string): Promise<string[]> {
   const s3 = new S3Client({ region });
   const bucket = await getBucketName(region);
@@ -186,11 +222,25 @@ async function reserveAddresses(instanceId: string, region: string, publicIp: st
       const addressesPerInstance = registry.addressesPerInstance || DEFAULT_ADDRESSES_PER_INSTANCE;
       console.error(`📊 Using ${addressesPerInstance} addresses per instance`);
 
-      // Reserve new range
-      const startAddress = registry.nextAvailable;
-      const endAddress = startAddress + addressesPerInstance - 1;
+      // Find first available gap of the required size
+      const startAddress = findAvailableAddressRange(registry, addressesPerInstance);
 
-      // Check if we have enough addresses
+      if (startAddress === -1) {
+        const totalAddresses = registry.addresses.length;
+        const assignedCount = Object.values(registry.assignments).reduce(
+          (sum, a) => sum + (a.endAddress - a.startAddress + 1),
+          0,
+        );
+        throw new Error(
+          `Not enough consecutive addresses available (need ${addressesPerInstance} consecutive, ` +
+            `${assignedCount}/${totalAddresses} addresses assigned)`,
+        );
+      }
+
+      const endAddress = startAddress + addressesPerInstance - 1;
+      console.error(`📍 Found available range: ${startAddress}-${endAddress}`);
+
+      // Double-check we have enough addresses (should always pass if findAvailableAddressRange worked)
       if (endAddress >= registry.addresses.length) {
         throw new Error(`Not enough addresses in registry (need ${endAddress + 1}, have ${registry.addresses.length})`);
       }
@@ -209,7 +259,6 @@ async function reserveAddresses(instanceId: string, region: string, publicIp: st
         lastHeartbeat: new Date().toISOString(), // Initialize with current time
       };
 
-      registry.nextAvailable = endAddress + 1;
       registry.lastUpdated = new Date().toISOString();
 
       // Conditional write with ETag (optimistic lock)
