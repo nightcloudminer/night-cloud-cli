@@ -414,13 +414,28 @@ export class MiningOrchestrator {
         const errorMessage = error.message || String(error);
         await this.solutionTracker.recordError(address, challengeId, errorMessage, isDonation);
 
-        // Only store the solution for retry if it's a 5XX server error
-        // Client errors (4XX) should not be retried as they indicate invalid requests
-        const shouldRetry =
+        // Retry logic:
+        // - 5XX server errors (server is having issues)
+        // - Timeout errors (network congestion or slow API)
+        // - Network errors (connection issues)
+        // Do NOT retry 4XX client errors (invalid requests)
+        const isTimeout = errorMessage.includes("timeout") || errorMessage.includes("ECONNABORTED");
+        const isNetworkError =
+          errorMessage.includes("ECONNREFUSED") ||
+          errorMessage.includes("ENOTFOUND") ||
+          errorMessage.includes("ETIMEDOUT");
+        const isServerError =
           error instanceof ApiSubmissionError && error.statusCode && error.statusCode >= 500 && error.statusCode < 600;
 
+        const shouldRetry = isServerError || isTimeout || isNetworkError;
+
         if (shouldRetry) {
-          console.log(`🔄 Server error (${(error as ApiSubmissionError).statusCode}) - storing solution for retry`);
+          const reason = isTimeout
+            ? "timeout"
+            : isNetworkError
+            ? "network error"
+            : `server error (${(error as ApiSubmissionError).statusCode})`;
+          console.log(`🔄 Retryable error (${reason}) - storing solution for retry`);
           try {
             await this.solutionTracker.storePendingSolution(address, challengeId, nonce, errorMessage, isDonation);
           } catch (storeError) {
