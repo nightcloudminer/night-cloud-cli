@@ -122,6 +122,11 @@ export class EC2Manager {
           Action: ["sts:GetCallerIdentity"],
           Resource: "*",
         },
+        {
+          Effect: "Allow",
+          Action: ["ec2:DescribeInstances"],
+          Resource: "*",
+        },
       ],
     };
 
@@ -353,6 +358,47 @@ systemctl daemon-reload
 systemctl enable night-cloud-heartbeat.timer
 systemctl start night-cloud-heartbeat.timer
 
+# Create cleanup service
+cat > /etc/systemd/system/night-cloud-cleanup.service << CLEANUP_SERVICE
+[Unit]
+Description=Night Cloud Registry Cleanup Service
+After=network.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/miner
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+Environment="REGION=$REGION"
+ExecStart=/usr/bin/node /home/ubuntu/miner/dist/scripts/cleanup-registry.js
+StandardOutput=journal
+StandardError=journal
+CLEANUP_SERVICE
+
+# Create cleanup timer (runs on startup and every 20 minutes)
+cat > /etc/systemd/system/night-cloud-cleanup.timer << 'CLEANUP_TIMER'
+[Unit]
+Description=Night Cloud Registry Cleanup Timer
+After=network.target
+
+[Timer]
+# Start 2 minutes after boot (after instances have written heartbeats)
+OnBootSec=2min
+# Run every 20 minutes
+OnUnitActiveSec=20min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
+CLEANUP_TIMER
+
+# Enable cleanup timer on all instances
+# The cleanup script itself will use a distributed lock (S3 file with TTL) to ensure only one runs at a time
+# This way if the instance running cleanup gets terminated, another will take over
+echo "🧹 Enabling cleanup timer (distributed lock ensures only one instance runs at a time)..."
+systemctl enable night-cloud-cleanup.timer
+systemctl start night-cloud-cleanup.timer
+
 # Configure CloudWatch Logs agent
 echo "📊 Configuring CloudWatch Logs..."
 cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << CLOUDWATCH_CONFIG
@@ -395,6 +441,12 @@ echo "🚀 Night Cloud Miner starting..."
 
 # Get region from environment (set earlier in user data)
 source /etc/environment
+
+# Write initial heartbeat BEFORE address assignment
+# This ensures the instance is marked as alive before it has an assignment
+# Prevents cleanup from removing our assignment during the reservation process
+echo "💓 Writing initial heartbeat..."
+node /home/ubuntu/miner/dist/scripts/heartbeat.js || echo "⚠️  Initial heartbeat failed (will retry via timer)"
 
 # Infinite retry logic for address assignment
 # This handles cases where all addresses are temporarily reserved

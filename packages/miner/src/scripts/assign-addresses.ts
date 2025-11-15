@@ -41,7 +41,6 @@ interface Assignment {
   addresses: string[];
   assignedAt: string;
   region: string;
-  lastHeartbeat?: string;
 }
 
 async function getBucketName(region: string): Promise<string> {
@@ -96,40 +95,8 @@ async function getInstanceMetadata(): Promise<InstanceMetadata> {
   }
 }
 
-/**
- * Clean up stale assignments (no heartbeat for 6 minutes)
- * Returns true if any assignments were cleaned up
- */
-function cleanupStaleAssignments(registry: Registry): boolean {
-  const now = Date.now();
-  const staleThreshold = 1800 * 1000; // 30 minutes
-  let cleaned = false;
-
-  for (const [instanceId, assignment] of Object.entries(registry.assignments)) {
-    // Check if assignment has a heartbeat
-    if (!assignment.lastHeartbeat) {
-      // No heartbeat yet - check if assignment is old (>1.5 min)
-      const assignedAt = new Date(assignment.assignedAt).getTime();
-      if (now - assignedAt > staleThreshold) {
-        console.error(`🧹 Cleaning stale assignment (no heartbeat): ${instanceId}`);
-        delete registry.assignments[instanceId];
-        cleaned = true;
-      }
-    } else {
-      // Has heartbeat - check if it's stale (>1.5 min)
-      const lastHeartbeat = new Date(assignment.lastHeartbeat).getTime();
-      if (now - lastHeartbeat > staleThreshold) {
-        console.error(
-          `🧹 Cleaning stale assignment (old heartbeat): ${instanceId} (last: ${assignment.lastHeartbeat})`,
-        );
-        delete registry.assignments[instanceId];
-        cleaned = true;
-      }
-    }
-  }
-
-  return cleaned;
-}
+// Cleanup logic has been moved to cleanup-registry.ts
+// This runs as a separate periodic task on a single instance to avoid contention
 
 /**
  * Find the first available gap of N consecutive addresses.
@@ -200,12 +167,6 @@ async function reserveAddresses(instanceId: string, region: string, publicIp: st
         throw error;
       }
 
-      // Clean up stale assignments (opportunistic cleanup)
-      const cleaned = cleanupStaleAssignments(registry);
-      if (cleaned) {
-        console.error(`✅ Cleaned up stale assignments`);
-      }
-
       // Check if already assigned
       if (registry.assignments[instanceId]) {
         const assignment = registry.assignments[instanceId];
@@ -256,7 +217,6 @@ async function reserveAddresses(instanceId: string, region: string, publicIp: st
         addresses: instanceAddresses,
         assignedAt: new Date().toISOString(),
         region,
-        lastHeartbeat: new Date().toISOString(), // Initialize with current time
       };
 
       registry.lastUpdated = new Date().toISOString();

@@ -49,6 +49,7 @@ try {
   execSync(`cp ${path.join(minerDir, 'dist/cli.js')} ${tempMinerDir}/dist/`, { stdio: 'pipe' });
   execSync(`cp ${path.join(minerDir, 'dist/scripts/assign-addresses.js')} ${tempMinerDir}/dist/scripts/`, { stdio: 'pipe' });
   execSync(`cp ${path.join(minerDir, 'dist/scripts/heartbeat.js')} ${tempMinerDir}/dist/scripts/`, { stdio: 'pipe' });
+  execSync(`cp ${path.join(minerDir, 'dist/scripts/cleanup-registry.js')} ${tempMinerDir}/dist/scripts/`, { stdio: 'pipe' });
 
   // Copy Rust source code (will be compiled on the instance)
   console.log('  Copying Rust source code...');

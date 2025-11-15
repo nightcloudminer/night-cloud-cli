@@ -12,7 +12,7 @@
     "build:rust": "cd rust && cargo build --release",
     "build:ts": "npm run build:ts:compile && npm run build:ts:bundle",
     "build:ts:compile": "tsc",
-    "build:ts:bundle": "esbuild dist/cli.js --bundle --platform=node --target=node20 --outfile=dist/cli.bundled.js && esbuild dist/scripts/assign-addresses.js --bundle --platform=node --target=node20 --outfile=dist/scripts/assign-addresses.bundled.js && esbuild dist/scripts/heartbeat.js --bundle --platform=node --target=node20 --outfile=dist/scripts/heartbeat.bundled.js && mv dist/cli.bundled.js dist/cli.js && mv dist/scripts/assign-addresses.bundled.js dist/scripts/assign-addresses.js && mv dist/scripts/heartbeat.bundled.js dist/scripts/heartbeat.js && chmod +x dist/cli.js && chmod +x dist/scripts/*.js",
+    "build:ts:bundle": "esbuild dist/cli.js --bundle --platform=node --target=node20 --outfile=dist/cli.bundled.js && esbuild dist/scripts/assign-addresses.js --bundle --platform=node --target=node20 --outfile=dist/scripts/assign-addresses.bundled.js && esbuild dist/scripts/heartbeat.js --bundle --platform=node --target=node20 --outfile=dist/scripts/heartbeat.bundled.js && esbuild dist/scripts/cleanup-registry.js --bundle --platform=node --target=node20 --outfile=dist/scripts/cleanup-registry.bundled.js && mv dist/cli.bundled.js dist/cli.js && mv dist/scripts/assign-addresses.bundled.js dist/scripts/assign-addresses.js && mv dist/scripts/heartbeat.bundled.js dist/scripts/heartbeat.js && mv dist/scripts/cleanup-registry.bundled.js dist/scripts/cleanup-registry.js && chmod +x dist/cli.js && chmod +x dist/scripts/*.js",
     "start": "node dist/cli.js",
     "dev": "ts-node src/cli.ts",
     "clean": "rm -rf dist && cd rust && cargo clean"
@@ -26,6 +26,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@aws-sdk/client-ec2": "^3.540.0",
     "@aws-sdk/client-s3": "^3.540.0",
     "@aws-sdk/client-sts": "^3.540.0",
     "axios": "^1.6.8",

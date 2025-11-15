@@ -1,41 +1,27 @@
 #!/usr/bin/env node
 
 /**
- * Heartbeat script that updates the lastHeartbeat timestamp every minute.
+ * Heartbeat script that writes a heartbeat timestamp to a separate S3 file.
+ * Each instance writes to its own file (heartbeats/{instance-id}.json) to avoid contention.
  * This keeps the address assignment alive and prevents it from being reclaimed.
- *
- * Uses local cache to avoid fetching registry on every heartbeat.
  */
 
-import { S3Client, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { STSClient, GetCallerIdentityCommand } from "@aws-sdk/client-sts";
 import axios from "axios";
 import * as fs from "fs";
 
-const REGISTRY_KEY = "registry.json";
-const MAX_RETRIES = 5;
 const CACHE_FILE = "/var/lib/night-cloud/addresses.json";
-
-interface Registry {
-  assignments: Record<string, Assignment>;
-  lastUpdated: string;
-}
-
-interface Assignment {
-  instanceId: string;
-  publicIp: string;
-  startAddress: number;
-  endAddress: number;
-  addresses: string[];
-  assignedAt: string;
-  region: string;
-  lastHeartbeat?: string;
-}
 
 interface CachedData {
   addresses: string[];
   instanceId: string;
   cachedAt: string;
+}
+
+interface HeartbeatData {
+  lastHeartbeat: string;
+  publicIp?: string;
 }
 
 async function getBucketName(region: string): Promise<string> {
@@ -96,69 +82,50 @@ async function getRegion(): Promise<string> {
   }
 }
 
+async function getPublicIp(): Promise<string | undefined> {
+  try {
+    const token = await getIMDSv2Token();
+    const response = await axios.get("http://169.254.169.254/latest/meta-data/public-ipv4", {
+      headers: { "X-aws-ec2-metadata-token": token },
+      timeout: 2000,
+    });
+    return response.data;
+  } catch (error) {
+    // Public IP might not be available, that's okay
+    return undefined;
+  }
+}
+
 async function updateHeartbeat(instanceId: string, region: string): Promise<boolean> {
   const s3 = new S3Client({ region });
   const bucket = await getBucketName(region);
 
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    try {
-      // Load current registry with ETag
-      const response = await s3.send(
-        new GetObjectCommand({
-          Bucket: bucket,
-          Key: REGISTRY_KEY,
-        }),
-      );
+  try {
+    // Get public IP if available
+    const publicIp = await getPublicIp();
 
-      const body = await response.Body?.transformToString();
-      if (!body) throw new Error("Empty response body");
+    // Write heartbeat to individual file - no contention!
+    const heartbeatData: HeartbeatData = {
+      lastHeartbeat: new Date().toISOString(),
+      publicIp,
+    };
 
-      const registry: Registry = JSON.parse(body);
-      const etag = response.ETag || "";
+    const heartbeatKey = `heartbeats/${instanceId}.json`;
 
-      // Check if assignment exists
-      if (!registry.assignments[instanceId]) {
-        console.error(`⚠️  No assignment found for ${instanceId}`);
-        return false;
-      }
+    await s3.send(
+      new PutObjectCommand({
+        Bucket: bucket,
+        Key: heartbeatKey,
+        Body: JSON.stringify(heartbeatData, null, 2),
+        ContentType: "application/json",
+      }),
+    );
 
-      // Update heartbeat timestamp
-      registry.assignments[instanceId].lastHeartbeat = new Date().toISOString();
-      registry.lastUpdated = new Date().toISOString();
-
-      // Conditional write with ETag
-      try {
-        await s3.send(
-          new PutObjectCommand({
-            Bucket: bucket,
-            Key: REGISTRY_KEY,
-            Body: JSON.stringify(registry, null, 2),
-            ContentType: "application/json",
-            IfMatch: etag,
-          }),
-        );
-
-        return true;
-      } catch (error: any) {
-        if (error.name === "PreconditionFailed") {
-          // Someone else modified, retry
-          const backoff = Math.min(2 ** attempt, 10);
-          await new Promise((resolve) => setTimeout(resolve, backoff * 1000));
-          continue;
-        }
-        throw error;
-      }
-    } catch (error) {
-      if (attempt < MAX_RETRIES - 1) {
-        await new Promise((resolve) => setTimeout(resolve, 2000));
-      } else {
-        console.error(`❌ Failed to update heartbeat: ${error}`);
-        return false;
-      }
-    }
+    return true;
+  } catch (error) {
+    console.error(`❌ Failed to update heartbeat: ${error}`);
+    return false;
   }
-
-  return false;
 }
 
 function loadCachedData(): CachedData | null {
