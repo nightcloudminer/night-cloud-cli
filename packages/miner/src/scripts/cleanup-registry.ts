@@ -1,19 +1,18 @@
 #!/usr/bin/env node
 
 /**
- * Registry cleanup script that removes stale assignments.
+ * Registry cleanup script that removes assignments for instances that are no longer running.
  * Should be run periodically (e.g., every 15-30 minutes) by a single instance.
  * Uses ETag-based optimistic locking to safely update the registry.
  */
 
-import { S3Client, GetObjectCommand, PutObjectCommand, ListObjectsV2Command } from "@aws-sdk/client-s3";
+import { S3Client, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 import { STSClient, GetCallerIdentityCommand } from "@aws-sdk/client-sts";
 import { EC2Client, DescribeInstancesCommand } from "@aws-sdk/client-ec2";
 import axios from "axios";
 
 const REGISTRY_KEY = "registry.json";
 const MAX_RETRIES = 60; // Retry for ~10 minutes (exponential backoff: 1s, 2s, 4s, 8s, then 10s per retry)
-const STALE_THRESHOLD = 1800 * 1000; // 30 minutes
 
 interface Registry {
   assignments: Record<string, Assignment>;
@@ -92,10 +91,13 @@ async function getRegion(): Promise<string> {
 }
 
 /**
- * Leader election: check if this instance is the alphabetically first running instance
- * This ensures only one instance runs cleanup at a time
+ * Get all running instance IDs and perform leader election
+ * Returns the set of running instance IDs and whether this instance is the leader
  */
-async function isLeader(instanceId: string, region: string): Promise<boolean> {
+async function getRunningInstancesAndCheckLeader(
+  instanceId: string,
+  region: string,
+): Promise<{ runningInstances: Set<string>; isLeader: boolean }> {
   try {
     const ec2 = new EC2Client({ region });
 
@@ -131,7 +133,7 @@ async function isLeader(instanceId: string, region: string): Promise<boolean> {
 
     if (runningInstances.length === 0) {
       console.log(`⚠️  No running instances found`);
-      return false;
+      return { runningInstances: new Set(), isLeader: false };
     }
 
     // Sort alphabetically and check if we're first
@@ -146,85 +148,24 @@ async function isLeader(instanceId: string, region: string): Promise<boolean> {
       console.log(`⏭️  This instance (${instanceId}) is not the leader, skipping cleanup`);
     }
 
-    return isLeaderInstance;
+    return { runningInstances: new Set(runningInstances), isLeader: isLeaderInstance };
   } catch (error) {
     console.error(`⚠️  Error during leader election: ${error}`);
     // On error, don't run cleanup to be safe
-    return false;
+    return { runningInstances: new Set(), isLeader: false };
   }
 }
 
 /**
- * Scan all heartbeat files and return a map of instance IDs to their last heartbeat times
+ * Clean up assignments for instances that are no longer running
+ * Uses ETag-based optimistic locking for safe concurrent updates
  */
-async function scanHeartbeats(s3: S3Client, bucket: string): Promise<Map<string, number>> {
-  const heartbeats = new Map<string, number>();
-
-  try {
-    const heartbeatsResponse = await s3.send(
-      new ListObjectsV2Command({
-        Bucket: bucket,
-        Prefix: "heartbeats/",
-      }),
-    );
-
-    if (heartbeatsResponse.Contents) {
-      // Fetch all heartbeat files in parallel for speed
-      const heartbeatPromises = heartbeatsResponse.Contents.map(async (obj) => {
-        if (!obj.Key || !obj.Key.endsWith(".json")) return null;
-
-        const instanceId = obj.Key.replace("heartbeats/", "").replace(".json", "");
-
-        try {
-          const heartbeatResponse = await s3.send(
-            new GetObjectCommand({
-              Bucket: bucket,
-              Key: obj.Key,
-            }),
-          );
-
-          const body = await heartbeatResponse.Body?.transformToString();
-          if (body) {
-            const heartbeatData = JSON.parse(body);
-            const lastHeartbeat = new Date(heartbeatData.lastHeartbeat).getTime();
-            return { instanceId, lastHeartbeat };
-          }
-        } catch (error) {
-          console.error(`⚠️  Failed to read heartbeat for ${instanceId}: ${error}`);
-        }
-
-        return null;
-      });
-
-      const results = await Promise.all(heartbeatPromises);
-
-      for (const result of results) {
-        if (result) {
-          heartbeats.set(result.instanceId, result.lastHeartbeat);
-        }
-      }
-    }
-  } catch (error) {
-    console.error(`⚠️  Failed to scan heartbeats: ${error}`);
-  }
-
-  return heartbeats;
-}
-
-/**
- * Clean up stale assignments with ETag-based optimistic locking
- */
-async function cleanupRegistry(region: string): Promise<void> {
+async function cleanupRegistry(region: string, runningInstances: Set<string>): Promise<void> {
   const s3 = new S3Client({ region });
   const bucket = await getBucketName(region);
-  const now = Date.now();
 
   console.log(`🧹 Starting registry cleanup for ${region}...`);
-
-  // Scan all heartbeat files first (doesn't require locking)
-  console.log(`📊 Scanning heartbeat files...`);
-  const heartbeats = await scanHeartbeats(s3, bucket);
-  console.log(`📊 Found ${heartbeats.size} heartbeat files`);
+  console.log(`📊 Currently running instances: ${Array.from(runningInstances).join(", ")}`);
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
@@ -244,42 +185,26 @@ async function cleanupRegistry(region: string): Promise<void> {
 
       console.log(`📊 Registry has ${Object.keys(registry.assignments).length} assignments`);
 
-      // Identify stale assignments
+      // Identify assignments for instances that are no longer running
       const staleInstances: string[] = [];
 
-      for (const [instanceId, assignment] of Object.entries(registry.assignments)) {
-        const lastHeartbeat = heartbeats.get(instanceId);
-
-        if (!lastHeartbeat) {
-          // No heartbeat file - check if assignment is old
-          const assignedAt = new Date(assignment.assignedAt).getTime();
-          if (now - assignedAt > STALE_THRESHOLD) {
-            staleInstances.push(instanceId);
-          }
-        } else {
-          // Has heartbeat - check if it's stale
-          if (now - lastHeartbeat > STALE_THRESHOLD) {
-            staleInstances.push(instanceId);
-          }
+      for (const instanceId of Object.keys(registry.assignments)) {
+        if (!runningInstances.has(instanceId)) {
+          staleInstances.push(instanceId);
         }
       }
 
       if (staleInstances.length === 0) {
-        console.log(`✅ No stale assignments found`);
+        console.log(`✅ No stale assignments found - all assignments are for running instances`);
         return;
       }
 
-      console.log(`🧹 Found ${staleInstances.length} stale assignments to clean up`);
+      console.log(`🧹 Found ${staleInstances.length} assignments for instances that are no longer running`);
 
       // Remove stale assignments
       for (const instanceId of staleInstances) {
         const assignment = registry.assignments[instanceId];
-        const lastHeartbeat = heartbeats.get(instanceId);
-        const lastHeartbeatStr = lastHeartbeat ? new Date(lastHeartbeat).toISOString() : "never";
-
-        console.log(
-          `   🗑️  Removing ${instanceId} (addresses ${assignment.startAddress}-${assignment.endAddress}, last heartbeat: ${lastHeartbeatStr})`,
-        );
+        console.log(`   🗑️  Removing ${instanceId} (addresses ${assignment.startAddress}-${assignment.endAddress})`);
         delete registry.assignments[instanceId];
       }
 
@@ -326,15 +251,15 @@ async function main() {
   const region = await getRegion();
   const instanceId = await getInstanceId();
 
-  // Leader election: only the alphabetically first running instance runs cleanup
-  const leader = await isLeader(instanceId, region);
-  if (!leader) {
+  // Get running instances and perform leader election
+  const { runningInstances, isLeader } = await getRunningInstancesAndCheckLeader(instanceId, region);
+  if (!isLeader) {
     console.log(`✅ Cleanup skipped (not leader)`);
     process.exit(0);
   }
 
   // This instance is the leader, proceed with cleanup
-  await cleanupRegistry(region);
+  await cleanupRegistry(region, runningInstances);
 }
 
 main().catch((error) => {

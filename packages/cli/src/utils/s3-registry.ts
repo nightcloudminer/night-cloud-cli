@@ -4,8 +4,6 @@ import {
   HeadBucketCommand,
   CreateBucketCommand,
   GetObjectCommand,
-  ListObjectsV2Command,
-  DeleteObjectCommand,
   NoSuchKey,
 } from "@aws-sdk/client-s3";
 import { STSClient, GetCallerIdentityCommand } from "@aws-sdk/client-sts";
@@ -22,7 +20,8 @@ import * as crypto from "crypto";
  * 3. Uploading the miner code tarball for instances to download
  * 4. Uploading wallet addresses for instances to use
  *
- * All address reservation and heartbeat logic happens on the instances via Python scripts.
+ * Address reservation logic happens on the instances via scripts.
+ * Cleanup is handled by querying EC2 instance state directly.
  */
 export class S3RegistryManager {
   private s3Client: S3Client;
@@ -239,118 +238,5 @@ export class S3RegistryManager {
    */
   getRegion(): string {
     return this.region;
-  }
-
-  /**
-   * Write a heartbeat file for a specific instance
-   * Each instance writes to its own file to avoid contention
-   */
-  async writeHeartbeat(instanceId: string, data: { lastHeartbeat: string; publicIp?: string }): Promise<void> {
-    await this.initializeBucketName();
-
-    const heartbeatKey = `heartbeats/${instanceId}.json`;
-
-    await this.s3Client.send(
-      new PutObjectCommand({
-        Bucket: this.bucketName,
-        Key: heartbeatKey,
-        Body: JSON.stringify(data, null, 2),
-        ContentType: "application/json",
-      }),
-    );
-  }
-
-  /**
-   * Read a heartbeat file for a specific instance
-   */
-  async readHeartbeat(instanceId: string): Promise<{ lastHeartbeat: string; publicIp?: string } | null> {
-    await this.initializeBucketName();
-
-    const heartbeatKey = `heartbeats/${instanceId}.json`;
-
-    try {
-      const response = await this.s3Client.send(
-        new GetObjectCommand({
-          Bucket: this.bucketName,
-          Key: heartbeatKey,
-        }),
-      );
-
-      const body = await response.Body?.transformToString();
-      if (body) {
-        return JSON.parse(body);
-      }
-      return null;
-    } catch (error: any) {
-      if (error.name === "NoSuchKey") {
-        return null;
-      }
-      throw error;
-    }
-  }
-
-  /**
-   * List all heartbeat files and return instance IDs with their last heartbeat times
-   */
-  async listHeartbeats(): Promise<Map<string, { lastHeartbeat: string; publicIp?: string }>> {
-    await this.initializeBucketName();
-
-    const heartbeats = new Map<string, { lastHeartbeat: string; publicIp?: string }>();
-
-    try {
-      const response = await this.s3Client.send(
-        new ListObjectsV2Command({
-          Bucket: this.bucketName,
-          Prefix: "heartbeats/",
-        }),
-      );
-
-      if (response.Contents) {
-        // Fetch all heartbeat files in parallel
-        const heartbeatPromises = response.Contents.map(async (obj) => {
-          if (!obj.Key || !obj.Key.endsWith(".json")) return null;
-
-          const instanceId = obj.Key.replace("heartbeats/", "").replace(".json", "");
-          const heartbeat = await this.readHeartbeat(instanceId);
-
-          return heartbeat ? { instanceId, heartbeat } : null;
-        });
-
-        const results = await Promise.all(heartbeatPromises);
-
-        for (const result of results) {
-          if (result) {
-            heartbeats.set(result.instanceId, result.heartbeat);
-          }
-        }
-      }
-    } catch (error: any) {
-      console.error("Failed to list heartbeats:", error);
-    }
-
-    return heartbeats;
-  }
-
-  /**
-   * Delete a heartbeat file for a specific instance
-   */
-  async deleteHeartbeat(instanceId: string): Promise<void> {
-    await this.initializeBucketName();
-
-    const heartbeatKey = `heartbeats/${instanceId}.json`;
-
-    try {
-      await this.s3Client.send(
-        new DeleteObjectCommand({
-          Bucket: this.bucketName,
-          Key: heartbeatKey,
-        }),
-      );
-    } catch (error: any) {
-      // Ignore if file doesn't exist
-      if (error.name !== "NoSuchKey") {
-        throw error;
-      }
-    }
   }
 }

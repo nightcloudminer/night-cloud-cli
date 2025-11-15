@@ -11,6 +11,7 @@ import {
   DescribeAvailabilityZonesCommand,
   DescribeLaunchTemplatesCommand,
   TerminateInstancesCommand,
+  DescribeSpotPriceHistoryCommand,
 } from "@aws-sdk/client-ec2";
 import {
   IAMClient,
@@ -322,42 +323,6 @@ chown ubuntu:ubuntu /var/lib/night-cloud
 # Set REGION environment variable for scripts
 echo "REGION=$REGION" >> /etc/environment
 
-# Create systemd timer for heartbeat (every minute)
-cat > /etc/systemd/system/night-cloud-heartbeat.service << 'HEARTBEAT_SERVICE'
-[Unit]
-Description=Night Cloud Miner Heartbeat
-After=network.target
-
-[Service]
-Type=oneshot
-User=ubuntu
-WorkingDirectory=/home/ubuntu/miner
-Environment="PATH=/usr/local/bin:/usr/bin:/bin"
-ExecStart=/usr/bin/node /home/ubuntu/miner/dist/scripts/heartbeat.js
-HEARTBEAT_SERVICE
-
-cat > /etc/systemd/system/night-cloud-heartbeat.timer << 'HEARTBEAT_TIMER'
-[Unit]
-Description=Night Cloud Miner Heartbeat Timer
-After=network.target
-
-[Timer]
-# Start 10 minutes after boot with random 0-120s delay to spread out heartbeats
-OnBootSec=10min
-OnUnitActiveSec=10min
-# Use RandomizedDelaySec to add jitter and prevent thundering herd
-RandomizedDelaySec=120s
-AccuracySec=1min
-
-[Install]
-WantedBy=timers.target
-HEARTBEAT_TIMER
-
-# Enable heartbeat timer
-systemctl daemon-reload
-systemctl enable night-cloud-heartbeat.timer
-systemctl start night-cloud-heartbeat.timer
-
 # Create cleanup service
 cat > /etc/systemd/system/night-cloud-cleanup.service << CLEANUP_SERVICE
 [Unit]
@@ -375,17 +340,17 @@ StandardOutput=journal
 StandardError=journal
 CLEANUP_SERVICE
 
-# Create cleanup timer (runs on startup and every 20 minutes)
+# Create cleanup timer (runs on startup and every 5 minutes)
 cat > /etc/systemd/system/night-cloud-cleanup.timer << 'CLEANUP_TIMER'
 [Unit]
 Description=Night Cloud Registry Cleanup Timer
 After=network.target
 
 [Timer]
-# Start 2 minutes after boot (after instances have written heartbeats)
+# Start 2 minutes after boot
 OnBootSec=2min
-# Run every 20 minutes
-OnUnitActiveSec=20min
+# Run every 5 minutes
+OnUnitActiveSec=5min
 AccuracySec=1min
 
 [Install]
@@ -393,9 +358,9 @@ WantedBy=timers.target
 CLEANUP_TIMER
 
 # Enable cleanup timer on all instances
-# The cleanup script itself will use a distributed lock (S3 file with TTL) to ensure only one runs at a time
-# This way if the instance running cleanup gets terminated, another will take over
-echo "🧹 Enabling cleanup timer (distributed lock ensures only one instance runs at a time)..."
+# The cleanup script itself uses leader election to ensure only one instance runs at a time
+# This way if the leader instance gets terminated, another will take over
+echo "🧹 Enabling cleanup timer (leader election ensures only one instance runs at a time)..."
 systemctl enable night-cloud-cleanup.timer
 systemctl start night-cloud-cleanup.timer
 
@@ -441,12 +406,6 @@ echo "🚀 Night Cloud Miner starting..."
 
 # Get region from environment (set earlier in user data)
 source /etc/environment
-
-# Write initial heartbeat BEFORE address assignment
-# This ensures the instance is marked as alive before it has an assignment
-# Prevents cleanup from removing our assignment during the reservation process
-echo "💓 Writing initial heartbeat..."
-node /home/ubuntu/miner/dist/scripts/heartbeat.js || echo "⚠️  Initial heartbeat failed (will retry via timer)"
 
 # Infinite retry logic for address assignment
 # This handles cases where all addresses are temporarily reserved
@@ -633,6 +592,7 @@ systemctl status night-cloud --no-pager || true
           region,
           launchTime: instance.LaunchTime ?? new Date(),
           instanceType: instance.InstanceType,
+          availabilityZone: instance.Placement?.AvailabilityZone,
         });
       }
     }
@@ -652,5 +612,161 @@ systemctl status night-cloud --no-pager || true
     });
 
     await client.send(command);
+  }
+
+  /**
+   * Get current spot price for an instance type in a region
+   * Returns the minimum (cheapest) price across all AZs in the region
+   * This represents the best-case spot price you can get in that region
+   */
+  async getSpotPrice(region: string, instanceType: string): Promise<number | null> {
+    const client = this.getClient(region);
+
+    try {
+      const command = new DescribeSpotPriceHistoryCommand({
+        InstanceTypes: [instanceType as any],
+        ProductDescriptions: ["Linux/UNIX"],
+        StartTime: new Date(Date.now() - 3600000), // Last hour
+        MaxResults: 50,
+      });
+
+      const response = await client.send(command);
+
+      if (!response.SpotPriceHistory || response.SpotPriceHistory.length === 0) {
+        return null;
+      }
+
+      // Get the latest price for each AZ
+      const azPrices = new Map<string, { price: number; timestamp: Date }>();
+
+      for (const item of response.SpotPriceHistory) {
+        const az = item.AvailabilityZone!;
+        const price = parseFloat(item.SpotPrice!);
+        const timestamp = item.Timestamp!;
+
+        if (!azPrices.has(az) || azPrices.get(az)!.timestamp < timestamp) {
+          azPrices.set(az, { price, timestamp });
+        }
+      }
+
+      // Return minimum (cheapest) price across all AZs
+      // This is the best price you can get in this region
+      const prices = Array.from(azPrices.values()).map((p) => p.price);
+      return Math.min(...prices);
+    } catch (error) {
+      // Region might not support this instance type or we don't have access
+      return null;
+    }
+  }
+
+  /**
+   * Get weighted average spot price based on actual instance distribution across AZs
+   * If no instances are running, returns the minimum price (cheapest AZ)
+   */
+  async getWeightedSpotPrice(region: string, instanceType: string, instances: Instance[]): Promise<number | null> {
+    const result = await this.getWeightedSpotPriceWithDistribution(region, instanceType, instances);
+    return result.weightedPrice;
+  }
+
+  /**
+   * Get weighted spot price and AZ distribution data
+   * Returns both the weighted average price and detailed AZ breakdown
+   */
+  async getWeightedSpotPriceWithDistribution(
+    region: string,
+    instanceType: string,
+    instances: Instance[],
+  ): Promise<{
+    weightedPrice: number | null;
+    azDistribution: Array<{ az: string; runningCount: number; spotPrice: number | null }>;
+  }> {
+    const client = this.getClient(region);
+
+    try {
+      const command = new DescribeSpotPriceHistoryCommand({
+        InstanceTypes: [instanceType as any],
+        ProductDescriptions: ["Linux/UNIX"],
+        StartTime: new Date(Date.now() - 3600000), // Last hour
+        MaxResults: 50,
+      });
+
+      const response = await client.send(command);
+
+      if (!response.SpotPriceHistory || response.SpotPriceHistory.length === 0) {
+        return { weightedPrice: null, azDistribution: [] };
+      }
+
+      // Get the latest price for each AZ
+      const azPrices = new Map<string, { price: number; timestamp: Date }>();
+
+      for (const item of response.SpotPriceHistory) {
+        const az = item.AvailabilityZone!;
+        const price = parseFloat(item.SpotPrice!);
+        const timestamp = item.Timestamp!;
+
+        if (!azPrices.has(az) || azPrices.get(az)!.timestamp < timestamp) {
+          azPrices.set(az, { price, timestamp });
+        }
+      }
+
+      // Count running instances per AZ
+      const runningInstances = instances.filter((i) => i.state?.Name === "running");
+
+      const azInstanceCounts = new Map<string, number>();
+      for (const instance of runningInstances) {
+        if (instance.availabilityZone) {
+          azInstanceCounts.set(instance.availabilityZone, (azInstanceCounts.get(instance.availabilityZone) || 0) + 1);
+        }
+      }
+
+      // Build AZ distribution array
+      const azDistribution: Array<{ az: string; runningCount: number; spotPrice: number | null }> = [];
+      for (const [az, priceData] of azPrices.entries()) {
+        const count = azInstanceCounts.get(az) || 0;
+        if (count > 0) {
+          // Only include AZs with running instances
+          azDistribution.push({
+            az,
+            runningCount: count,
+            spotPrice: priceData.price,
+          });
+        }
+      }
+
+      // Sort by AZ name for consistent display
+      azDistribution.sort((a, b) => a.az.localeCompare(b.az));
+
+      if (runningInstances.length === 0) {
+        // No running instances, return minimum price
+        const prices = Array.from(azPrices.values()).map((p) => p.price);
+        return { weightedPrice: Math.min(...prices), azDistribution: [] };
+      }
+
+      // Calculate weighted average
+      let totalWeightedPrice = 0;
+      let totalInstances = 0;
+
+      for (const [az, count] of azInstanceCounts.entries()) {
+        const priceData = azPrices.get(az);
+        if (priceData) {
+          totalWeightedPrice += priceData.price * count;
+          totalInstances += count;
+        }
+      }
+
+      if (totalInstances === 0) {
+        // Fallback to minimum price if we couldn't match AZs
+        const prices = Array.from(azPrices.values()).map((p) => p.price);
+        return { weightedPrice: Math.min(...prices), azDistribution: [] };
+      }
+
+      return {
+        weightedPrice: totalWeightedPrice / totalInstances,
+        azDistribution,
+      };
+    } catch (error) {
+      // Region might not support this instance type or we don't have access
+      return { weightedPrice: null, azDistribution: [] };
+    }
   }
 }

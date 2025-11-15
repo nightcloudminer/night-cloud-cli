@@ -18,6 +18,7 @@ export interface Instance {
   readonly region: string;
   readonly launchTime: Date | undefined;
   readonly instanceType: string | undefined;
+  readonly availabilityZone?: string;
 }
 
 export interface MinerRange {

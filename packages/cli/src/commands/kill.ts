@@ -117,3 +117,4 @@ export async function killCommand(options: KillOptions): Promise<void> {
   console.log(chalk.white(`   night-cloud scale --region ${region} --instances <count>\n`));
 }
 
+

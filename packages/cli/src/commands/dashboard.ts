@@ -388,6 +388,12 @@ function calculateRewards(starsPerSolution: number | null, solutionsPerHour: num
 }
 
 // Multi-region dashboard types
+interface AZDistribution {
+  az: string;
+  runningCount: number;
+  spotPrice: number | null;
+}
+
 interface RegionData {
   region: string;
   instances: {
@@ -415,6 +421,8 @@ interface RegionData {
     total: number;
     active: number;
   };
+  spotPrice?: number | null;
+  azDistribution?: AZDistribution[];
   error?: string;
 }
 
@@ -438,6 +446,7 @@ interface MultiRegionData {
     hourlyRate: number;
     wallets: number;
     activeMiners: number;
+    avgSpotPrice: number | null;
   };
   rewards: {
     workToStarRate: number | null;
@@ -504,6 +513,9 @@ async function fetchMultiRegionData(apiUrl: string): Promise<MultiRegionData> {
   // Fetch challenge data once (same for all regions)
   const challengeData = await fetchChallengeData(apiUrl);
 
+  // Load config to get instance type for spot price queries
+  const config = loadConfig();
+
   // Discover all enabled regions dynamically
   const allRegions = await discoverEnabledRegions();
 
@@ -514,15 +526,26 @@ async function fetchMultiRegionData(apiUrl: string): Promise<MultiRegionData> {
       const ec2Manager = new EC2Manager(region);
       const asgManager = new AutoScalingManager();
 
-      const [instancesData, solutionsData, walletsData] = await Promise.all([
-        fetchInstancesData(region, ec2Manager, asgManager),
+      // First fetch instance IDs and basic data
+      const instanceIds = await asgManager.getAutoScalingGroupInstances(region);
+      const instances = await ec2Manager.getInstanceDetails(region, instanceIds);
+      const running = instances.filter((i: any) => i.state?.Name === "running").length;
+      const pending = instances.filter((i: any) => i.state?.Name === "pending").length;
+
+      // Now fetch other data in parallel, using instances for weighted spot price
+      const [solutionsData, walletsData, spotPriceData] = await Promise.all([
         fetchSolutionsData(region, s3Registry),
         fetchWalletsData(region, s3Registry),
+        ec2Manager.getWeightedSpotPriceWithDistribution(region, config.instanceType, instances),
       ]);
 
       return {
         region,
-        instances: instancesData,
+        instances: {
+          total: instances.length,
+          running,
+          pending,
+        },
         solutions: {
           total: solutionsData.total,
           donations: solutionsData.donations,
@@ -534,6 +557,8 @@ async function fetchMultiRegionData(apiUrl: string): Promise<MultiRegionData> {
           recentErrors: solutionsData.recentErrors,
         },
         wallets: walletsData,
+        spotPrice: spotPriceData.weightedPrice,
+        azDistribution: spotPriceData.azDistribution,
       };
     } catch (error: unknown) {
       // Return empty data with error for regions that fail
@@ -552,12 +577,28 @@ async function fetchMultiRegionData(apiUrl: string): Promise<MultiRegionData> {
           recentErrors: [],
         },
         wallets: { total: 0, active: 0 },
+        spotPrice: null,
         error: errorMessage,
       };
     }
   });
 
   const regions = await Promise.all(regionDataPromises);
+
+  // Calculate weighted average spot price across all regions
+  // Each region's spot price is already weighted by its AZ distribution
+  // Now we weight by running instances per region
+  let totalWeightedSpotPrice = 0;
+  let totalRunningWithPrice = 0;
+
+  regions.forEach((region) => {
+    if (region.spotPrice !== null && region.spotPrice !== undefined && region.instances.running > 0) {
+      totalWeightedSpotPrice += region.spotPrice * region.instances.running;
+      totalRunningWithPrice += region.instances.running;
+    }
+  });
+
+  const avgSpotPrice = totalRunningWithPrice > 0 ? totalWeightedSpotPrice / totalRunningWithPrice : null;
 
   // Calculate totals across all regions
   const totals = regions.reduce(
@@ -572,6 +613,7 @@ async function fetchMultiRegionData(apiUrl: string): Promise<MultiRegionData> {
       hourlyRate: acc.hourlyRate + region.solutions.hourlyRate,
       wallets: acc.wallets + region.wallets.total,
       activeMiners: acc.activeMiners + region.wallets.active,
+      avgSpotPrice,
     }),
     {
       instances: 0,
@@ -584,6 +626,7 @@ async function fetchMultiRegionData(apiUrl: string): Promise<MultiRegionData> {
       hourlyRate: 0,
       wallets: 0,
       activeMiners: 0,
+      avgSpotPrice,
     },
   );
 
@@ -668,40 +711,65 @@ function renderMultiRegionDashboard(
   const errorRate = ((data.totals.errors / (data.totals.solutions + data.totals.errors)) * 100).toFixed(1);
   console.log(`  Errors:      ${chalk.red.bold(data.totals.errors)} ${chalk.gray(`(${errorRate}% failure rate)`)}`);
 
-  // Calculate estimated cost
-  const spotPrice = parseFloat(config.spotMaxPrice);
+  // Calculate estimated cost using actual spot prices
+  const maxSpotPrice = parseFloat(config.spotMaxPrice);
+  const actualSpotPrice = data.totals.avgSpotPrice ?? maxSpotPrice;
   const ipv4CostPerHour = 0.005; // AWS IPv4 address cost per hour
-  const instanceCostPerHour = spotPrice * data.totals.running;
+
+  // Cost based on actual spot price
+  const actualInstanceCostPerHour = actualSpotPrice * data.totals.running;
   const ipv4TotalCostPerHour = ipv4CostPerHour * data.totals.running;
-  const estimatedCostPerHour = instanceCostPerHour + ipv4TotalCostPerHour;
-  const estimatedCostPerDay = estimatedCostPerHour * 24;
+  const actualCostPerHour = actualInstanceCostPerHour + ipv4TotalCostPerHour;
+  const actualCostPerDay = actualCostPerHour * 24;
+
+  // Cost based on max spot price (for comparison)
+  const maxInstanceCostPerHour = maxSpotPrice * data.totals.running;
+  const maxCostPerHour = maxInstanceCostPerHour + ipv4TotalCostPerHour;
+
+  // Display spot price info
+  if (data.totals.avgSpotPrice !== null) {
+    console.log(
+      `  Spot Price:  ${chalk.cyan.bold(`$${actualSpotPrice.toFixed(4)}/hr`)} ${chalk.gray(
+        `(max: $${maxSpotPrice}/hr)`,
+      )}`,
+    );
+  } else {
+    console.log(`  Spot Price:  ${chalk.gray(`$${maxSpotPrice}/hr (max, actual prices unavailable)`)}`);
+  }
+
   console.log(
-    `  Est. Cost:   ${chalk.yellow.bold(`$${estimatedCostPerHour.toFixed(4)}/hr`)} ${chalk.gray(
-      `($${estimatedCostPerDay.toFixed(2)}/day)`,
+    `  Est. Cost:   ${chalk.yellow.bold(`$${actualCostPerHour.toFixed(4)}/hr`)} ${chalk.gray(
+      `($${actualCostPerDay.toFixed(2)}/day)`,
     )}`,
   );
 
-  // Calculate cost per NIGHT token and NIGHT per solution if we have reward estimates
-  if (data.rewards.estimatedNightPerHour > 0) {
-    const costPerNight = estimatedCostPerHour / data.rewards.estimatedNightPerHour;
-    console.log(`  Cost/NIGHT:  ${chalk.yellow.bold(`$${costPerNight.toFixed(4)}`)} per token`);
-
-    // Calculate NIGHT per solution
-    const nightPerSolution =
-      data.totals.hourlyRate > 0 ? data.rewards.estimatedNightPerHour / data.totals.hourlyRate : 0;
-
-    if (nightPerSolution > 0) {
-      console.log(`  NIGHT/Solution:   ${chalk.green.bold(`~${nightPerSolution.toFixed(4)} NIGHT`)} per solution`);
-    }
-  }
-
-  console.log();
-
-  // Session Section
+  // Calculate session average hourly rate
   const sessionCount = Math.max(0, data.totals.solutions - session.startTotal);
   const sessionStartTime = new Date(session.startTime);
   const sessionDuration = Date.now() - sessionStartTime.getTime();
   const sessionHours = sessionDuration / (1000 * 60 * 60);
+  const sessionAvgRate = sessionHours > 0 && sessionCount > 0 ? sessionCount / sessionHours : 0;
+
+  // Calculate cost per NIGHT token using session average rate and actual costs
+  if (data.rewards.workToStarRate && sessionAvgRate > 0) {
+    // Calculate estimated NIGHT per hour based on session average
+    const sessionStarsPerHour = sessionAvgRate * data.rewards.workToStarRate;
+    const sessionNightPerHour = sessionStarsPerHour / 1000000;
+
+    const costPerNight = actualCostPerHour / sessionNightPerHour;
+    console.log(
+      `  Cost/NIGHT:  ${chalk.yellow.bold(`$${costPerNight.toFixed(4)}`)} per token ${chalk.gray("(session avg)")}`,
+    );
+
+    // Calculate NIGHT per solution based on work-to-star rate
+    const nightPerSolution = data.rewards.workToStarRate / 1000000;
+    console.log(`  NIGHT/Solution:   ${chalk.green.bold(`~${nightPerSolution.toFixed(4)} NIGHT`)} per solution`);
+  }
+
+  console.log();
+
+  // Session Section (reuse already calculated values)
+  // sessionCount, sessionStartTime, sessionDuration, sessionHours already calculated above
 
   console.log(chalk.cyan.bold("⏱️  CURRENT SESSION"));
   console.log(chalk.gray("─".repeat(60)));
@@ -757,13 +825,31 @@ function renderMultiRegionDashboard(
       const regionName = chalk.white.bold(region.region.padEnd(15));
       const instances = `${region.instances.running}/${region.instances.total}`;
       const wallets = `${region.wallets.active}/${region.wallets.total}`;
+      const spotPriceStr =
+        region.spotPrice !== null && region.spotPrice !== undefined ? `$${region.spotPrice.toFixed(4)}/hr` : "N/A";
 
       if (region.error) {
         console.log(`  ${regionName} ${chalk.red("(error)")}`);
       } else {
         console.log(
-          `  ${regionName} Inst: ${chalk.cyan(instances.padEnd(8))} Wallets: ${chalk.cyan(wallets.padEnd(8))}`,
+          `  ${regionName} Inst: ${chalk.cyan(instances.padEnd(8))} Wallets: ${chalk.cyan(
+            wallets.padEnd(8),
+          )} Spot: ${chalk.yellow(spotPriceStr)}`,
         );
+
+        // Show AZ distribution if available
+        if (region.azDistribution && region.azDistribution.length > 0) {
+          region.azDistribution.forEach((az) => {
+            const azName = az.az.padEnd(18);
+            const azPrice = az.spotPrice !== null ? `$${az.spotPrice.toFixed(4)}/hr` : "N/A";
+            const azCost = az.spotPrice !== null ? `$${(az.spotPrice * az.runningCount).toFixed(4)}/hr` : "N/A";
+            console.log(
+              `    ${chalk.gray("└─")} ${chalk.gray(azName)} ${chalk.cyan(`${az.runningCount} inst`)} @ ${chalk.yellow(
+                azPrice,
+              )} ${chalk.gray("=")} ${chalk.yellow(azCost)}`,
+            );
+          });
+        }
       }
     });
     console.log();
