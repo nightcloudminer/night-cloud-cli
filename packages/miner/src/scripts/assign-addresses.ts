@@ -97,12 +97,12 @@ async function getInstanceMetadata(): Promise<InstanceMetadata> {
 }
 
 /**
- * Clean up stale assignments (no heartbeat for 1.5 minutes)
+ * Clean up stale assignments (no heartbeat for 6 minutes)
  * Returns true if any assignments were cleaned up
  */
 function cleanupStaleAssignments(registry: Registry): boolean {
   const now = Date.now();
-  const staleThreshold = 90 * 1000; // 1.5 minutes (90 seconds)
+  const staleThreshold = 1800 * 1000; // 30 minutes
   let cleaned = false;
 
   for (const [instanceId, assignment] of Object.entries(registry.assignments)) {

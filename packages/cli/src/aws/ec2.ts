@@ -337,9 +337,12 @@ Description=Night Cloud Miner Heartbeat Timer
 After=network.target
 
 [Timer]
-OnBootSec=1min
-OnUnitActiveSec=1min
-AccuracySec=10s
+# Start 10 minutes after boot with random 0-120s delay to spread out heartbeats
+OnBootSec=10min
+OnUnitActiveSec=10min
+# Use RandomizedDelaySec to add jitter and prevent thundering herd
+RandomizedDelaySec=120s
+AccuracySec=1min
 
 [Install]
 WantedBy=timers.target
