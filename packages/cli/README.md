@@ -32,18 +32,12 @@ The authors provide no warranty and are not liable for any losses, damages, or c
 # 1. Initialize configuration
 npx @night-cloud/cli init
 
-# 2. Generate wallets (REQUIRED before deploying)
-# Each wallet can submit one solution per challenge
-# Aim for at least as many wallets as your target solutions/hour
-npx @night-cloud/cli wallet --region ap-south-1 --generate 50
-
-# If you get rate limited (happens often), you can automatically retry wallet registration
-npx @night-cloud/cli wallet --region ap-south-1 --register
+# 2. Generate wallets
+npx @night-cloud/cli wallet --region ap-south-1 --auto
 
 # 3. Deploy to AWS
-# By default, 10 addresses are attached per EC2 instance (c7g.xlarge)
-# This is more than enough for most deployments
-npx @night-cloud/cli deploy --region ap-south-1 --instances 5
+# As of latest difficulty, 6 addresses per EC2 instance (c7g.xlarge) is sufficient
+npx @night-cloud/cli deploy --region ap-south-1 --instances 100 --addresses-per-instance 6
 
 # 4. Monitor your deployment
 npx @night-cloud/cli dashboard
@@ -57,8 +51,8 @@ npm install -g @night-cloud/cli
 
 # Follow the same steps
 night-cloud init
-night-cloud wallet --region ap-south-1 --generate 50
-night-cloud deploy --region ap-south-1 --instances 5
+night-cloud wallet --region ap-south-1 --auto
+night-cloud deploy --region ap-south-1 --instances 100 --addresses-per-instance 6
 night-cloud status
 ```
 
@@ -69,7 +63,7 @@ night-cloud status
 **Wallet-to-instance ratio**: By default, each EC2 instance (c7g.xlarge) is assigned 10 wallet addresses. This is typically more than enough since:
 - Each instance can find multiple solutions per challenge
 - Solutions are distributed across the 10 addresses automatically
-- You can adjust this with `--miners-per-instance` if needed
+- You can adjust this with `--addresses-per-instance` if needed
 
 **Planning your deployment**:
 NOTE: These numbers of frequently changing as the difficulty increases. You may want to lower your addresses per instance configuration over time.
@@ -84,7 +78,7 @@ NOTE: These numbers of frequently changing as the difficulty increases. You may 
 **Recommended strategy**:
 1. **Start with ap-south-1** - Deploy as many instances as you need here first
 2. **Max out ap-south-1** - Scale to your AWS account limits in this region
-3. **Only then expand** - If you need more capacity, deploy to other regions like `ap-northeast-2`, `us-east-1`, etc.
+3. **Only then expand** - If you need more capacity, deploy to other cheaper regions like `ap-northeast-2`, `ap-northeast-3`, `us-east-2`, etc.
 
 This can save you 30-40% on infrastructure costs compared to deploying across multiple regions from the start.
 
@@ -137,11 +131,39 @@ night-cloud stop --region ap-south-1
 night-cloud stop --region ap-south-1 --terminate  # Terminate instances
 ```
 
+### `kill`
+Emergency kill switch - immediately terminate all mining operations
+
+```bash
+night-cloud kill --region ap-south-1
+night-cloud kill --region ap-south-1 --force  # Skip confirmation prompts
+```
+
+**⚠️ WARNING**: This is an emergency command that:
+- Sets Auto Scaling Group capacity to 0
+- Terminates all running instances immediately
+- Stops all mining operations
+- Cannot be undone
+
+Options:
+- `--region, -r`: AWS region (required)
+- `--force, -f`: Skip confirmation prompts (use with caution!)
+
+**When to use**: Use this command when you need to immediately stop all mining operations, such as:
+- Emergency cost control
+- Unexpected AWS billing alerts
+- Critical issues requiring immediate shutdown
+
+**Note**: Unlike `stop`, this command requires double confirmation (type "KILL" to confirm) unless you use the `--force` flag. After killing, you can resume mining with the `scale` command.
+
 ### `wallet`
 Manage Cardano wallets
 
 ```bash
-# Generate wallets (automatically registers them)
+# Generate wallets repeatedly (while avoiding rate limits)
+night-cloud wallet --region ap-south-1 --auto
+
+# Generate a specific number of wallets (automatically registers them)
 night-cloud wallet --region ap-south-1 --generate 50
 
 # Generate without registering
