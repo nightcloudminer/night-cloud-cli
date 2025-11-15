@@ -12,6 +12,7 @@ import {
   DescribeLaunchTemplatesCommand,
   TerminateInstancesCommand,
   DescribeSpotPriceHistoryCommand,
+  GetSpotPlacementScoresCommand,
 } from "@aws-sdk/client-ec2";
 import {
   IAMClient,
@@ -567,6 +568,179 @@ systemctl status night-cloud --no-pager || true
 
     const response = await client.send(command);
     return response.AvailabilityZones?.map((az) => az.ZoneName!) || [];
+  }
+
+  /**
+   * Get spot placement scores for availability zones
+   * Returns capacity availability scores (1-10, higher is better) for each AZ
+   */
+  async getSpotPlacementScores(
+    region: string,
+    instanceType: string,
+    targetCapacity: number,
+  ): Promise<Map<string, number> | null> {
+    const client = this.getClient(region);
+
+    try {
+      const command = new GetSpotPlacementScoresCommand({
+        InstanceTypes: [instanceType as any],
+        TargetCapacity: targetCapacity,
+        RegionNames: [region],
+      });
+
+      const response = await client.send(command);
+
+      if (!response.SpotPlacementScores || response.SpotPlacementScores.length === 0) {
+        return null;
+      }
+
+      const scores = new Map<string, number>();
+      for (const score of response.SpotPlacementScores) {
+        if (score.AvailabilityZoneId && score.Score !== undefined) {
+          scores.set(score.AvailabilityZoneId, score.Score);
+        }
+      }
+
+      return scores;
+    } catch (error) {
+      // API might not be available or we don't have permissions
+      return null;
+    }
+  }
+
+  /**
+   * Find the cheapest availability zone for a given instance type in a region
+   * Returns the AZ with the lowest spot price
+   */
+  async getCheapestAvailabilityZone(region: string, instanceType: string): Promise<string | null> {
+    const client = this.getClient(region);
+
+    try {
+      const command = new DescribeSpotPriceHistoryCommand({
+        InstanceTypes: [instanceType as any],
+        ProductDescriptions: ["Linux/UNIX"],
+        StartTime: new Date(Date.now() - 3600000), // Last hour
+        MaxResults: 100,
+      });
+
+      const response = await client.send(command);
+
+      if (!response.SpotPriceHistory || response.SpotPriceHistory.length === 0) {
+        // Fallback to first available AZ if no spot price data
+        const azs = await this.getAvailabilityZones(region);
+        return azs.length > 0 ? azs[0] : null;
+      }
+
+      // Get the latest price for each AZ
+      const azPrices = new Map<string, { price: number; timestamp: Date }>();
+
+      for (const item of response.SpotPriceHistory) {
+        const az = item.AvailabilityZone!;
+        const price = parseFloat(item.SpotPrice!);
+        const timestamp = item.Timestamp!;
+
+        if (!azPrices.has(az) || azPrices.get(az)!.timestamp < timestamp) {
+          azPrices.set(az, { price, timestamp });
+        }
+      }
+
+      // Find the AZ with the lowest price
+      let cheapestAZ: string | null = null;
+      let lowestPrice = Infinity;
+
+      for (const [az, priceData] of azPrices.entries()) {
+        if (priceData.price < lowestPrice) {
+          lowestPrice = priceData.price;
+          cheapestAZ = az;
+        }
+      }
+
+      return cheapestAZ;
+    } catch (error) {
+      // Fallback to first available AZ on error
+      const azs = await this.getAvailabilityZones(region);
+      return azs.length > 0 ? azs[0] : null;
+    }
+  }
+
+  /**
+   * Get comprehensive AZ information including prices and capacity scores
+   * Returns data for all AZs to help make informed placement decisions
+   */
+  async getAZCapacityInfo(
+    region: string,
+    instanceType: string,
+    targetCapacity: number,
+  ): Promise<
+    Array<{
+      az: string;
+      spotPrice: number | null;
+      capacityScore: number | null;
+    }>
+  > {
+    const client = this.getClient(region);
+
+    try {
+      // Get spot prices
+      const priceCommand = new DescribeSpotPriceHistoryCommand({
+        InstanceTypes: [instanceType as any],
+        ProductDescriptions: ["Linux/UNIX"],
+        StartTime: new Date(Date.now() - 3600000),
+        MaxResults: 100,
+      });
+
+      const priceResponse = await client.send(priceCommand);
+      const azPrices = new Map<string, number>();
+
+      if (priceResponse.SpotPriceHistory) {
+        const latestPrices = new Map<string, { price: number; timestamp: Date }>();
+
+        for (const item of priceResponse.SpotPriceHistory) {
+          const az = item.AvailabilityZone!;
+          const price = parseFloat(item.SpotPrice!);
+          const timestamp = item.Timestamp!;
+
+          if (!latestPrices.has(az) || latestPrices.get(az)!.timestamp < timestamp) {
+            latestPrices.set(az, { price, timestamp });
+          }
+        }
+
+        for (const [az, data] of latestPrices.entries()) {
+          azPrices.set(az, data.price);
+        }
+      }
+
+      // Get capacity scores
+      const capacityScores = await this.getSpotPlacementScores(region, instanceType, targetCapacity);
+
+      // Combine data
+      const allAZs = new Set([...azPrices.keys(), ...(capacityScores?.keys() || [])]);
+
+      const result: Array<{
+        az: string;
+        spotPrice: number | null;
+        capacityScore: number | null;
+      }> = [];
+
+      for (const az of allAZs) {
+        result.push({
+          az,
+          spotPrice: azPrices.get(az) || null,
+          capacityScore: capacityScores?.get(az) || null,
+        });
+      }
+
+      // Sort by price (cheapest first)
+      result.sort((a, b) => {
+        if (a.spotPrice === null) return 1;
+        if (b.spotPrice === null) return -1;
+        return a.spotPrice - b.spotPrice;
+      });
+
+      return result;
+    } catch (error) {
+      return [];
+    }
   }
 
   async getInstanceDetails(region: string, instanceIds: string[]): Promise<Instance[]> {

@@ -344,12 +344,94 @@ export async function deployCommand(options: DeploymentOptions): Promise<void> {
     process.exit(1);
   }
 
-  // Step 4: Get availability zones
-  spinner = ora("Getting availability zones...").start();
-  let availabilityZones: string[];
+  // Step 4: Get spot prices and let user select AZs
+  spinner = ora("Getting spot prices for availability zones...").start();
+  let selectedAZs: string[];
   try {
-    availabilityZones = await ec2Manager.getAvailabilityZones(region);
-    spinner.succeed(`Using ${availabilityZones.length} availability zones`);
+    // Get spot prices for all AZs
+    const { DescribeSpotPriceHistoryCommand } = await import("@aws-sdk/client-ec2");
+    const client = (ec2Manager as any).getClient(region);
+
+    const command = new DescribeSpotPriceHistoryCommand({
+      InstanceTypes: [config.instanceType as any],
+      ProductDescriptions: ["Linux/UNIX"],
+      StartTime: new Date(Date.now() - 3600000),
+      MaxResults: 100,
+    });
+
+    const response = await client.send(command);
+
+    if (!response.SpotPriceHistory || response.SpotPriceHistory.length === 0) {
+      throw new Error("No spot price data available");
+    }
+
+    // Get latest price for each AZ
+    const azPrices = new Map<string, { price: number; timestamp: Date }>();
+    for (const item of response.SpotPriceHistory) {
+      const az = item.AvailabilityZone!;
+      const price = parseFloat(item.SpotPrice!);
+      const timestamp = item.Timestamp!;
+
+      if (!azPrices.has(az) || azPrices.get(az)!.timestamp < timestamp) {
+        azPrices.set(az, { price, timestamp });
+      }
+    }
+
+    // Sort by price
+    const sortedAZs = Array.from(azPrices.entries())
+      .map(([az, data]) => ({ az, price: data.price }))
+      .sort((a, b) => a.price - b.price);
+
+    spinner.succeed("Spot prices retrieved");
+    console.log();
+
+    // Display AZ options
+    console.log(chalk.cyan("Available zones (sorted by price):"));
+    console.log();
+    sortedAZs.forEach((item, index) => {
+      const marker = index === 0 ? chalk.green("  → ") : "    ";
+      const label = index === 0 ? chalk.green(" (cheapest)") : "";
+      console.log(
+        `${marker}${chalk.white(item.az.padEnd(18))} ${chalk.yellow(`$${item.price.toFixed(4)}/hr`)}${label}`,
+      );
+    });
+    console.log();
+
+    // Warning about capacity
+    console.log(chalk.yellow("⚠️  Note: Cheaper zones may have limited capacity."));
+    console.log(chalk.gray("   Using multiple zones increases chances of getting all instances."));
+    console.log();
+
+    // Interactive selection - all zones selected by default
+    const { selectedAZsList } = await inquirer.prompt([
+      {
+        type: "checkbox",
+        name: "selectedAZsList",
+        message: "Select availability zones to use:",
+        choices: sortedAZs.map((item) => ({
+          name: `${item.az.padEnd(18)} $${item.price.toFixed(4)}/hr`,
+          value: item.az,
+          checked: true, // All zones selected by default
+        })),
+        validate: (answer) => {
+          if (answer.length === 0) {
+            return "You must select at least one availability zone";
+          }
+          return true;
+        },
+      },
+    ]);
+
+    selectedAZs = selectedAZsList;
+
+    console.log();
+    console.log(chalk.green(`✓ Selected ${selectedAZs.length} availability zone(s):`));
+    selectedAZs.forEach((az) => {
+      const priceData = azPrices.get(az);
+      const priceStr = priceData ? `$${priceData.price.toFixed(4)}/hr` : "N/A";
+      console.log(`  ${chalk.cyan(az)} @ ${chalk.yellow(priceStr)}`);
+    });
+    console.log();
   } catch (error: any) {
     spinner.fail("Failed to get availability zones");
     console.error(chalk.red(error.message));
@@ -360,10 +442,10 @@ export async function deployCommand(options: DeploymentOptions): Promise<void> {
   const existingSize = await asgManager.getAutoScalingGroupSize(region);
   const isUpdate = existingSize > 0;
 
-  // Step 6: Create/update Auto Scaling Group
+  // Step 6: Create/update Auto Scaling Group with selected AZs
   spinner = ora("Setting up Auto Scaling Group...").start();
   try {
-    await asgManager.createOrUpdateAutoScalingGroup(region, config, instanceCount, availabilityZones);
+    await asgManager.createOrUpdateAutoScalingGroup(region, config, instanceCount, selectedAZs);
     spinner.succeed("Auto Scaling Group ready");
   } catch (error: any) {
     spinner.fail("Failed to setup Auto Scaling Group");

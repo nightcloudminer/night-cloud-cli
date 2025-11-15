@@ -49,6 +49,7 @@ export class AutoScalingManager {
           MinSize: desiredCount,
           MaxSize: desiredCount,
           DesiredCapacity: desiredCount,
+          AvailabilityZones: availabilityZones, // Update AZs as well
         });
 
         await client.send(updateCommand);
