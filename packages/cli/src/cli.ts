@@ -83,6 +83,11 @@ yargs(hideBin(process.argv))
           type: "boolean",
           description: "Trigger instance refresh to deploy new code to existing instances",
           default: false,
+        })
+        .option("all-zones", {
+          type: "boolean",
+          description: "Automatically select all availability zones (skip interactive selection)",
+          default: false,
         });
     },
     async (argv) => {
@@ -93,6 +98,7 @@ yargs(hideBin(process.argv))
         instance: argv.instance,
         force: argv.force,
         refresh: argv.refresh,
+        allZones: argv["all-zones"],
       });
     },
   )

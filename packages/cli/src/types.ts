@@ -56,6 +56,7 @@ export interface DeploymentOptions {
   readonly instance?: string;
   readonly force?: boolean;
   readonly refresh?: boolean;
+  readonly allZones?: boolean;
 }
 
 export interface RegionAddOptions {

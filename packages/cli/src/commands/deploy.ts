@@ -397,32 +397,39 @@ export async function deployCommand(options: DeploymentOptions): Promise<void> {
     });
     console.log();
 
-    // Warning about capacity
-    console.log(chalk.yellow("⚠️  Note: Cheaper zones may have limited capacity."));
-    console.log(chalk.gray("   Using multiple zones increases chances of getting all instances."));
-    console.log();
+    // If --all-zones flag is set, skip interactive selection
+    if (options.allZones) {
+      selectedAZs = sortedAZs.map((item) => item.az);
+      console.log(chalk.green(`✓ Automatically selected all ${selectedAZs.length} availability zones`));
+      console.log();
+    } else {
+      // Warning about capacity
+      console.log(chalk.yellow("⚠️  Note: Cheaper zones may have limited capacity."));
+      console.log(chalk.gray("   Using multiple zones increases chances of getting all instances."));
+      console.log();
 
-    // Interactive selection - all zones selected by default
-    const { selectedAZsList } = await inquirer.prompt([
-      {
-        type: "checkbox",
-        name: "selectedAZsList",
-        message: "Select availability zones to use:",
-        choices: sortedAZs.map((item) => ({
-          name: `${item.az.padEnd(18)} $${item.price.toFixed(4)}/hr`,
-          value: item.az,
-          checked: true, // All zones selected by default
-        })),
-        validate: (answer) => {
-          if (answer.length === 0) {
-            return "You must select at least one availability zone";
-          }
-          return true;
+      // Interactive selection - all zones selected by default
+      const { selectedAZsList } = await inquirer.prompt([
+        {
+          type: "checkbox",
+          name: "selectedAZsList",
+          message: "Select availability zones to use:",
+          choices: sortedAZs.map((item) => ({
+            name: `${item.az.padEnd(18)} $${item.price.toFixed(4)}/hr`,
+            value: item.az,
+            checked: true, // All zones selected by default
+          })),
+          validate: (answer) => {
+            if (answer.length === 0) {
+              return "You must select at least one availability zone";
+            }
+            return true;
+          },
         },
-      },
-    ]);
+      ]);
 
-    selectedAZs = selectedAZsList;
+      selectedAZs = selectedAZsList;
+    }
 
     console.log();
     console.log(chalk.green(`✓ Selected ${selectedAZs.length} availability zone(s):`));
