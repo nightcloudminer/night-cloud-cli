@@ -398,7 +398,7 @@ source /etc/environment
 # We never give up - just keep retrying until addresses become available
 RETRY_COUNT=0
 ADDRESSES=""
-RETRY_INTERVAL=30
+BASE_RETRY_INTERVAL=30
 
 while true; do
   RETRY_COUNT=$((RETRY_COUNT + 1))
@@ -424,6 +424,9 @@ while true; do
     break
   fi
   
+  # Add jitter to prevent thundering herd (random 0-30s added to base interval)
+  JITTER=$((RANDOM % 31))
+  RETRY_INTERVAL=$((BASE_RETRY_INTERVAL + JITTER))
   echo "⏳ Address assignment failed (exit code: $EXIT_CODE). Retrying in \${RETRY_INTERVAL}s..."
   echo "   (Waiting for stale assignments to be cleaned up or addresses to become available)"
   sleep $RETRY_INTERVAL
