@@ -16,6 +16,7 @@ import { logsCommand } from "./commands/logs";
 import { mineCommand } from "./commands/mine";
 import { dashboardCommand } from "./commands/dashboard";
 import { killCommand } from "./commands/kill";
+import { consolidateCommand } from "./commands/consolidate";
 
 // Read version from package.json
 const packageJson = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8"));
@@ -350,6 +351,59 @@ yargs(hideBin(process.argv))
         addresses: argv.addresses,
         workers: argv.workers,
         pollInterval: argv["poll-interval"],
+      });
+    },
+  )
+  // Consolidate command
+  .command(
+    "consolidate",
+    "Consolidate rewards from all wallets in a region to a destination address",
+    (yargs) => {
+      return yargs
+        .option("region", {
+          alias: "r",
+          type: "string",
+          description: "AWS region to consolidate from",
+          demandOption: true,
+        })
+        .option("to", {
+          alias: "t",
+          type: "string",
+          description: "Destination Cardano address (must start with addr1...)",
+          demandOption: true,
+        })
+        .option("workers", {
+          alias: "w",
+          type: "number",
+          description: "Number of parallel worker threads",
+          default: 10,
+        })
+        .option("batch-size", {
+          alias: "b",
+          type: "number",
+          description: "Number of donations per batch",
+          default: 100,
+        })
+        .option("pause", {
+          alias: "p",
+          type: "number",
+          description: "Seconds to pause between batches",
+          default: 2,
+        })
+        .option("output", {
+          alias: "o",
+          type: "string",
+          description: "Output JSON filename (auto-generated if not specified)",
+        });
+    },
+    async (argv) => {
+      await consolidateCommand({
+        region: argv.region,
+        to: argv.to,
+        workers: argv.workers,
+        batchSize: argv["batch-size"],
+        pauseSeconds: argv.pause,
+        outputFile: argv.output,
       });
     },
   )

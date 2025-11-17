@@ -200,6 +200,52 @@ Shows:
 
 **Perfect for**: Multi-region deployments where you want a single pane of glass to monitor everything!
 
+### `consolidate`
+
+Consolidate all rewards from your mining wallets to a single destination address.
+
+```bash
+# Consolidate all wallets from a region to your personal wallet
+night-cloud consolidate --region ap-south-1 --to addr...
+```
+
+Options:
+- `--region, -r`: AWS region to consolidate from (required)
+- `--to, -t`: Destination Cardano address - **must be an address you control** (required)
+- `--workers, -w`: Number of parallel worker threads (default: 10)
+- `--batch-size, -b`: Number of donations per batch (default: 100)
+- `--pause, -p`: Seconds to pause between batches (default: 2)
+- `--output, -o`: Output JSON filename (auto-generated if not specified)
+
+**⚠️ IMPORTANT WARNINGS**:
+
+1. **Consolidation Window**: You can run this command at any time! The consolidation window closes 24 hours after mining ends. If you don't consolidate, you'll need to claim from each individual wallet separately.
+
+2. **Use Your Own Address**: The destination address (`--to`) **MUST** be a Cardano address you personally control (hardware wallet, browser wallet like Nami/Eternl, etc.). Do NOT use one of the generated mining wallets.
+
+3. **Run Once Per Region**: You only need to run this command **once per region**. It will process all wallets in that region automatically.
+
+4. **No Support for Missed Consolidation**: If you don't consolidate during the window, **no support will be added to this project** to help you sign claim transactions from individual wallets. Consolidate to make your life easier!
+
+5. **Why Consolidate**: By consolidating, you'll only need to sign a **single transaction** to claim all your NIGHT tokens instead of signing hundreds or thousands of transactions from individual mining wallets.
+
+**Example workflow**:
+```bash
+night-cloud consolidate --region ap-south-1 --to addr...
+night-cloud consolidate --region us-east-1 --to addr...
+night-cloud consolidate --region eu-west-1 --to addr...
+
+# Then when claiming opens, you'll only need to claim from your single browser or hardware wallet!
+```
+
+The command will:
+- Load all wallets from the specified region
+- Check each wallet's solution count
+- Skip wallets with no solutions
+- Donate all rewards to your destination address in parallel
+- Save detailed logs to `donations/` directory
+- Display total solutions consolidated
+
 ### `mine`
 Run the miner locally (for development/testing)
 

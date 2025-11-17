@@ -132,6 +132,50 @@ export class ScavengerMineAPI {
   }
 
   /**
+   * GET /statistics/{address} - Get statistics for a specific address
+   */
+  async getAddressStatistics(address: string): Promise<any> {
+    try {
+      const response = await this.client.get(`/statistics/${address}`);
+      return response.data;
+    } catch (error) {
+      throw this.handleApiError(error, "Failed to fetch address statistics");
+    }
+  }
+
+  /**
+   * POST /donate_to - Consolidate rewards from one address to another
+   *
+   * IMPORTANT:
+   * - URL format is /donate_to/{destination_address}/{original_address}/{signature}
+   * - This endpoint is only available on Day 22 (consolidation window after mining ends)
+   * - During Days 1-21 (mining period), this endpoint returns 403 Forbidden
+   */
+  async donateRewards(originalAddress: string, destinationAddress: string, signature: string): Promise<any> {
+    try {
+      // Correct parameter order: destination FIRST, then original, then signature
+      const response = await this.client.post(`/donate_to/${destinationAddress}/${originalAddress}/${signature}`, {});
+      return response.data;
+    } catch (error) {
+      // Check for specific error codes
+      if (axios.isAxiosError(error) && error.response?.status === 409) {
+        throw new Error("Donation already exists");
+      }
+      if (axios.isAxiosError(error) && error.response?.status === 403) {
+        throw new Error("Donation endpoint not available (may not be Day 22 yet)");
+      }
+      throw this.handleApiError(error, "Failed to donate rewards");
+    }
+  }
+
+  /**
+   * Construct the message that needs to be signed for donation
+   */
+  getDonationMessage(destinationAddress: string): string {
+    return `Assign accumulated Scavenger rights to: ${destinationAddress}`;
+  }
+
+  /**
    * Submit multiple solutions with retry logic
    */
   async submitSolutions(
