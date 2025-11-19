@@ -1,6 +1,7 @@
 import chalk from "chalk";
 import * as fs from "fs";
 import * as path from "path";
+import axios from "axios";
 import { ScavengerMineAPI } from "../shared";
 import { CardanoWalletManager } from "../utils/cardano-wallet";
 import { loadConfig } from "../config";
@@ -12,6 +13,7 @@ interface ConsolidateOptions {
   batchSize?: number;
   pauseSeconds?: number;
   outputFile?: string;
+  noStats?: boolean;
 }
 
 interface DonationResult {
@@ -55,7 +57,7 @@ interface DonationLog {
  * Consolidate rewards from all wallets in a region to a destination address
  */
 export async function consolidateCommand(options: ConsolidateOptions): Promise<void> {
-  const { region, to, workers = 10, batchSize = 100, pauseSeconds = 2, outputFile } = options;
+  const { region, to, workers = 10, batchSize = 100, pauseSeconds = 2, outputFile, noStats = false } = options;
 
   // Load configuration
   const config = loadConfig();
@@ -85,18 +87,36 @@ export async function consolidateCommand(options: ConsolidateOptions): Promise<v
   console.log(chalk.white(`Region: ${region}`));
   console.log(chalk.white(`Batch Size: ${batchSize}`));
   console.log(chalk.white(`Parallel Workers: ${workers}`));
-  console.log(chalk.white(`Pause Between Batches: ${pauseSeconds}s\n`));
+  console.log(chalk.white(`Pause Between Batches: ${pauseSeconds}s`));
+  if (noStats) {
+    console.log(chalk.yellow(`No Stats Mode: enabled (skipping all stats checks)\n`));
+  } else {
+    console.log();
+  }
 
-  // Verify destination address is registered
-  console.log(chalk.yellow("Verifying destination address..."));
-  try {
-    const destStats = await api.getAddressStatistics(destinationAddress);
-    const destReceipts = destStats.local?.crypto_receipts || 0;
-    console.log(chalk.green(`  ✓ Destination registered (current receipts: ${destReceipts})\n`));
-  } catch (error: any) {
-    console.error(chalk.red(`  ✗ Destination address NOT registered: ${error.message}`));
-    console.error(chalk.red(`\n  IMPORTANT: The destination address must be registered!\n`));
-    process.exit(1);
+  // Verify destination address is registered (unless no-stats mode)
+  if (!noStats) {
+    console.log(chalk.yellow("Verifying destination address..."));
+    try {
+      const destStats = await api.getAddressStatistics(destinationAddress);
+      const destReceipts = destStats.local?.crypto_receipts || 0;
+      console.log(chalk.green(`  ✓ Destination registered (current receipts: ${destReceipts})\n`));
+    } catch (error: any) {
+      const is429 = axios.isAxiosError(error) && error.response?.status === 429;
+      console.error(chalk.red(`  ✗ Destination address verification failed: ${error.message}`));
+
+      if (is429) {
+        console.error(chalk.yellow(`\n  The stats API is rate-limited (HTTP 429).`));
+        console.error(chalk.yellow(`  You can bypass this check with: --skip-stats`));
+        console.error(chalk.yellow(`  Make sure the destination address is registered before proceeding!\n`));
+      } else {
+        console.error(chalk.red(`\n  IMPORTANT: The destination address must be registered!\n`));
+      }
+      process.exit(1);
+    }
+  } else {
+    console.log(chalk.yellow("⚠️  Skipping all stats checks (--skip-stats mode)"));
+    console.log(chalk.yellow("   Make sure the destination address is registered!\n"));
   }
 
   // Load all wallets from the region
@@ -156,6 +176,7 @@ export async function consolidateCommand(options: ConsolidateOptions): Promise<v
       donationLog,
       batchStart,
       totalWallets,
+      noStats,
     );
 
     // Update log with results
@@ -225,6 +246,7 @@ async function processWalletsInParallel(
   donationLog: DonationLog,
   startIndex: number,
   totalWallets: number,
+  noStats: boolean,
 ): Promise<DonationResult[]> {
   const results: DonationResult[] = [];
   const executing: Promise<void>[] = [];
@@ -250,9 +272,11 @@ async function processWalletsInParallel(
     }
 
     // Create promise for this wallet
-    const promise = donateSingle(wallet, destinationAddress, api, walletManager, minerNumber).then((result) => {
-      results.push(result);
-    });
+    const promise = donateSingle(wallet, destinationAddress, api, walletManager, minerNumber, noStats).then(
+      (result) => {
+        results.push(result);
+      },
+    );
 
     executing.push(promise);
 
@@ -291,6 +315,7 @@ async function donateSingle(
   api: ScavengerMineAPI,
   walletManager: CardanoWalletManager,
   minerNumber: number,
+  noStats: boolean,
 ): Promise<DonationResult> {
   const result: DonationResult = {
     minerName: `miner${wallet.minerNumber}`,
@@ -305,22 +330,24 @@ async function donateSingle(
   };
 
   try {
-    // Get statistics before donation
-    try {
-      const stats = await api.getAddressStatistics(wallet.address);
-      result.receiptsBefore = stats.local?.crypto_receipts || 0;
-    } catch (error: any) {
-      // Not registered or other error - skip
-      result.status = "skipped";
-      result.error = `Not registered or stats unavailable: ${error.message}`;
-      return result;
-    }
+    // Get statistics before donation (unless no-stats mode)
+    if (!noStats) {
+      try {
+        const stats = await api.getAddressStatistics(wallet.address);
+        result.receiptsBefore = stats.local?.crypto_receipts || 0;
+      } catch (error: any) {
+        // Not registered or other error - skip
+        result.status = "skipped";
+        result.error = `Not registered or stats unavailable: ${error.message}`;
+        return result;
+      }
 
-    // Skip if no receipts
-    if (result.receiptsBefore === 0) {
-      result.status = "skipped";
-      result.error = "No receipts to donate";
-      return result;
+      // Skip if no receipts
+      if (result.receiptsBefore === 0) {
+        result.status = "skipped";
+        result.error = "No receipts to donate";
+        return result;
+      }
     }
 
     // Get donation message

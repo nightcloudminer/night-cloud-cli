@@ -394,6 +394,11 @@ yargs(hideBin(process.argv))
           alias: "o",
           type: "string",
           description: "Output JSON filename (auto-generated if not specified)",
+        })
+        .option("skip-stats", {
+          type: "boolean",
+          description: "Skip all stats checks (use when stats API is rate-limited)",
+          default: false,
         });
     },
     async (argv) => {
@@ -404,6 +409,7 @@ yargs(hideBin(process.argv))
         batchSize: argv["batch-size"],
         pauseSeconds: argv.pause,
         outputFile: argv.output,
+        noStats: argv["skip-stats"],
       });
     },
   )
